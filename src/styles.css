@@ -5,7 +5,7 @@
  * AUTHORITY:      Demos/design-system/CLAUDE.md (NO-COMPROMISE mandate), tokens.css
  *
  * Every colour, radius, stroke, shadow, spacing and font value below resolves to a
- * `../design-system/tokens.css` custom property or a documented component spec.
+ * `design-system/tokens.css` custom property or a documented component spec.
  * NO raw hex, NO rgba() literals, NO clamp() font sizing, NO Baloo/Comic Neue/cursive,
  * NO :root token redefinition. Typography uses the 11 Noto Sans `.type-*` sizes (fixed px).
  * Light theme only. Buttons use the canonical `.btn-*` classes from tokens.css.

@@ -32,7 +32,7 @@
 const BACKEND_URL = (typeof window !== 'undefined' && window.D1_BACKEND) || 'http://localhost:8000';
 
 // Design-system icon path (relative to index.html).
-const ICONS = '../design-system/icons/';
+const ICONS = 'design-system/icons/';
 
 /**
  * Lane definitions. `icon` is a design-system SVG filename (no emoji / no inline SVG).
