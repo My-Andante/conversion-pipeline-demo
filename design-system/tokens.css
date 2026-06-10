@@ -1,0 +1,291 @@
+@import url('https://fonts.googleapis.com/css2?family=Noto+Sans:ital,wght@0,400;0,500;0,700;1,400&display=swap');
+
+/*
+ * Equal Play — Canonical Design System Stylesheet
+ * ------------------------------------------------
+ * GENERATED from the token documentation, not hand-authored values.
+ * Source of truth:
+ *   - Demos/design-system/EQUAL_PLAY_DESIGN_TOKENS.md  (colors, spacing, radius, stroke, shadow, type)
+ *   - Demos/design-system/EQUAL_PLAY_COMPONENTS.md     (button specs)
+ * These docs are themselves derived from the Figma "Equal Play Design System"
+ * Global Tokens collection (fileKey 0dj9a9S2m87fThGJHnWq6d).
+ *
+ * DO NOT hand-edit the values in :root. They are a hard contract.
+ * If a value must change, change it in the token docs and regenerate this file.
+ * No magic values, no Figr placeholders (#3E7BFA / #009FF5), Noto Sans only.
+ */
+
+:root {
+  /* ---- Colors — Primary (orange) ---- */
+  --color-primary-100: #FFC9AB;
+  --color-primary-200: #FF9256;
+  --color-primary-300: #FF5C02;
+  --color-primary-400: #C74700;
+  --color-primary-500: #8D3200;
+  --color-primary-alpha10: #FF5C021A;
+
+  /* ---- Colors — Secondary (violet) ---- */
+  --color-secondary-100: #C4AAFF;
+  --color-secondary-200: #8855FF;
+  --color-secondary-300: #4D00FF;
+  --color-secondary-400: #3C00C6;
+  --color-secondary-500: #2A008C;
+  --color-secondary-alpha10: #4D00FF1A;
+
+  /* ---- Colors — Neutral (greyscale) ---- */
+  --color-neutral-100: #FFFFFF;
+  --color-neutral-200: #E8E8E8;
+  --color-neutral-300: #D2D2D2;
+  --color-neutral-400: #BBBBBB;
+  --color-neutral-500: #A4A4A4;
+  --color-neutral-600: #8E8E8E;
+  --color-neutral-700: #777777;
+  --color-neutral-800: #606060;
+  --color-neutral-900: #4A4A4A;
+  --color-neutral-1000: #333333;
+  --color-neutral-alpha10: #3333331A;
+
+  /* ---- Colors — Red (feedback) ---- */
+  --color-red-100: #FB3748;
+  --color-red-200: #D00416;
+  --color-red-alpha10: #FB37481A;
+
+  /* ---- Colors — Yellow (feedback) ---- */
+  --color-yellow-100: #FFDB43;
+  --color-yellow-200: #DFB400;
+  --color-yellow-alpha10: #FFDB431A;
+
+  /* ---- Colors — Green (feedback) ---- */
+  --color-green-100: #84EBB4;
+  --color-green-200: #1FC16B;
+  --color-green-alpha10: #1FC16B1A;
+
+  /* ---- Spacing (px, scale starts at 2 — no zero token) ---- */
+  --space-0: 2px;
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-7: 32px;
+  --space-8: 40px;
+  --space-9: 48px;
+  --space-10: 56px;
+
+  /* ---- Radius (px) ---- */
+  --radius-none: 0px;
+  --radius-1: 2px;
+  --radius-2: 4px;
+  --radius-3: 6px;
+  --radius-4: 8px;
+  --radius-5: 10px;
+  --radius-6: 12px;
+  --radius-7: 16px;
+  --radius-full: 999px;
+
+  /* ---- Stroke (px, border width) ---- */
+  --stroke-0: 1px;
+  --stroke-1: 2px;
+  --stroke-2: 4px;
+  --stroke-3: 6px;
+
+  /* ---- Shadows (effects) ---- */
+  --shadow-e0: 0 0 0 0 rgba(27, 28, 29, 0);
+  --shadow-e1: 0 2px 4px 0 rgba(27, 28, 29, 0.04);
+  --shadow-e2: 0 16px 32px -12px rgba(88, 92, 95, 0.10);
+  --shadow-e3: 0 16px 40px -8px rgba(88, 92, 95, 0.16);
+
+  /* ---- Font ---- */
+  --font-family: 'Noto Sans', sans-serif;
+}
+
+/* =========================================================================
+ * Typography — 11 named Noto Sans styles
+ * line-height = 1.5x size, letter-spacing = 0
+ * ========================================================================= */
+
+.type-h1 {
+  font-family: var(--font-family);
+  font-weight: 700;
+  font-size: 48px;
+  line-height: 72px;
+  letter-spacing: 0;
+}
+
+.type-h2 {
+  font-family: var(--font-family);
+  font-weight: 700;
+  font-size: 40px;
+  line-height: 60px;
+  letter-spacing: 0;
+}
+
+.type-h3 {
+  font-family: var(--font-family);
+  font-weight: 700;
+  font-size: 34px;
+  line-height: 51px;
+  letter-spacing: 0;
+}
+
+.type-h4 {
+  font-family: var(--font-family);
+  font-weight: 700;
+  font-size: 28px;
+  line-height: 42px;
+  letter-spacing: 0;
+}
+
+.type-h5 {
+  font-family: var(--font-family);
+  font-weight: 700;
+  font-size: 24px;
+  line-height: 36px;
+  letter-spacing: 0;
+}
+
+.type-h6 {
+  font-family: var(--font-family);
+  font-weight: 500;
+  font-size: 20px;
+  line-height: 30px;
+  letter-spacing: 0;
+}
+
+.type-h7 {
+  font-family: var(--font-family);
+  font-weight: 500;
+  font-size: 16px;
+  line-height: 24px;
+  letter-spacing: 0;
+}
+
+.type-b1 {
+  font-family: var(--font-family);
+  font-weight: 400;
+  font-size: 16px;
+  line-height: 24px;
+  letter-spacing: 0;
+}
+
+.type-b1-i {
+  font-family: var(--font-family);
+  font-weight: 400;
+  font-style: italic;
+  font-size: 16px;
+  line-height: 24px;
+  letter-spacing: 0;
+}
+
+.type-b2 {
+  font-family: var(--font-family);
+  font-weight: 400;
+  font-size: 14px;
+  line-height: 21px;
+  letter-spacing: 0;
+}
+
+.type-b3 {
+  font-family: var(--font-family);
+  font-weight: 400;
+  font-size: 12px;
+  line-height: 18px;
+  letter-spacing: 0;
+}
+
+/* =========================================================================
+ * Buttons
+ * ========================================================================= */
+
+/* Primary — filled pill, H-5 text */
+.btn-primary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  height: 72px;
+  padding: 14px var(--space-9);
+  border: var(--stroke-0) solid transparent;
+  border-radius: var(--radius-full);
+  box-shadow: 0 4px 7px rgba(0, 0, 0, 0.25);
+  background-color: var(--color-primary-300);
+  color: var(--color-neutral-100);
+  font-family: var(--font-family);
+  font-weight: 700;
+  font-size: 24px;
+  line-height: 36px;
+  letter-spacing: 0;
+  cursor: pointer;
+}
+
+.btn-primary:disabled {
+  background-color: var(--color-primary-100);
+  cursor: not-allowed;
+}
+
+/* Secondary — outline pill, white bg, H-5 text */
+.btn-secondary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  height: 72px;
+  padding: 14px var(--space-9);
+  border: var(--stroke-2) solid var(--color-primary-300);
+  border-radius: var(--radius-full);
+  box-shadow: 0 4px 7px rgba(0, 0, 0, 0.25);
+  background-color: var(--color-neutral-100);
+  color: var(--color-primary-300);
+  font-family: var(--font-family);
+  font-weight: 700;
+  font-size: 24px;
+  line-height: 36px;
+  letter-spacing: 0;
+  cursor: pointer;
+}
+
+.btn-secondary:disabled {
+  border-color: var(--color-primary-100);
+  color: var(--color-primary-100);
+  cursor: not-allowed;
+}
+
+/* Tertiary — default: text link, H-5 Bold, Secondary/300, no background */
+.btn-tertiary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--color-secondary-300);
+  font-family: var(--font-family);
+  font-weight: 700;
+  font-size: 24px;
+  line-height: 36px;
+  letter-spacing: 0;
+  cursor: pointer;
+}
+
+/* Tertiary Variant2 — small white pill chip, Yellow/100 border, H-7 text */
+.btn-tertiary--chip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-1);
+  height: 42px;
+  padding: var(--space-2) var(--space-4);
+  border: var(--stroke-1) solid var(--color-yellow-100);
+  border-radius: var(--radius-full);
+  box-shadow: 0 4px 7px rgba(0, 0, 0, 0.25);
+  background-color: var(--color-neutral-100);
+  color: var(--color-neutral-900);
+  font-family: var(--font-family);
+  font-weight: 500;
+  font-size: 16px;
+  line-height: 24px;
+  letter-spacing: 0;
+  cursor: pointer;
+}

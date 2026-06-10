@@ -1,0 +1,171 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>D1 Conversion Pipeline — Equal Play</title>
+<!-- Inline favicon: suppresses the default /favicon.ico 404 (design-system brand icon, base64 SVG). -->
+<link rel="icon" href="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCI+PHJlY3Qgd2lkdGg9IjI0IiBoZWlnaHQ9IjI0IiByeD0iNiIgZmlsbD0iI0ZGNUMwMiIvPjwvc3ZnPg==">
+
+<script src="vendor/opensheetmusicdisplay/opensheetmusicdisplay.min.js"></script>
+<script src="https://unpkg.com/@tonejs/midi@2.0.28/build/Midi.js"></script>
+<script src="src/ScoreJSON.js"></script>
+<!-- Real-piano playback (WebAudioFont, GPL-3.0 — demo only; AudioKit in production) ported from B1 -->
+<script src="src/WebAudioFontPlayer.js"></script>
+<script src="src/0000_GeneralUserGS_sf2_file.js"></script>
+<!-- Equal Play Design System tokens (authoritative) -->
+<link rel="stylesheet" href="design-system/tokens.css">
+<!-- App Styles -->
+<link rel="stylesheet" href="src/styles.css">
+</head>
+<body>
+
+<header class="header">
+  <h1>
+    <img class="d1-icon d1-icon--brand" src="design-system/icons/Icon_refresh__Active.svg" alt="" aria-hidden="true">
+    <span>Conversion Pipeline</span>
+  </h1>
+  <span class="version-badge" aria-label="Demo version D1_ConversionPipeline_v0.2.0">D1_ConversionPipeline_v0.2.0</span>
+</header>
+
+<main class="main">
+
+  <!-- ── Branch / lane selector (always visible) ── -->
+  <div id="pathTabs" class="branch-selector" role="tablist" aria-label="Conversion lane"></div>
+
+  <!-- ── Input Screen ── -->
+  <section id="screen-input" class="screen active" role="tabpanel" aria-label="Upload">
+
+    <!-- Audio branch sub-selector (Piano / Instrumental / Singing) — only shown for the audio lane -->
+    <div id="audioBranchWrap" class="audio-branch-wrap" hidden>
+      <p class="audio-branch-title type-h7" id="audioBranchTitle">Audio source — pick the closest match</p>
+      <div id="audioBranchSelector" class="branch-selector branch-selector--sub"
+           role="radiogroup" aria-labelledby="audioBranchTitle"></div>
+    </div>
+
+    <div class="info-box" id="infoBox"></div>
+    <p class="provenance-line" id="provenanceLine"></p>
+    <div id="uploadZone" class="upload-zone" role="button" tabindex="0" aria-label="Upload file or drop here"></div>
+    <div id="sampleRow" class="samples-row"></div>
+  </section>
+
+  <!-- ── Processing Screen ── -->
+  <section id="screen-processing" class="screen" role="status" aria-live="polite" aria-label="Processing">
+    <div class="processing-card">
+      <div class="processing-label">
+        <img class="d1-icon d1-icon--spin" src="design-system/icons/Icon_refresh__Active.svg" alt="" aria-hidden="true">
+        <span>Processing</span>&nbsp;<strong id="processingFile"></strong>
+      </div>
+      <div class="pipeline" id="pipelineSteps"></div>
+    </div>
+  </section>
+
+  <!-- ── Result Screen ── -->
+  <section id="screen-result" class="screen" aria-label="Result">
+
+    <!-- Mandatory Teacher Review Gate (wraps the rendered score before completion) -->
+    <section class="review-gate" aria-labelledby="reviewGateTitle">
+      <header class="review-gate__header">
+        <img class="d1-icon" src="design-system/icons/Icon_edit__Active.svg" alt="" aria-hidden="true">
+        <div>
+          <h2 id="reviewGateTitle" class="review-gate__title">Teacher Review</h2>
+          <p class="review-gate__subtitle">Review and edit the converted score before it is dispatched.</p>
+        </div>
+      </header>
+
+      <div class="review-gate__notice">
+        <img class="d1-icon d1-icon--sm" src="design-system/icons/Icon_info__White.svg" alt="" aria-hidden="true">
+        <span>Every AI conversion requires teacher approval before it can be assigned (M10).</span>
+      </div>
+
+      <!-- Result header: success title + accuracy badge + Convert Another -->
+      <div class="result-header-row">
+        <div>
+          <div class="result-title" id="resultTitle">
+            <img class="d1-icon" src="design-system/icons/Icon_check__Active.svg" alt="" aria-hidden="true">
+            <span id="resultTitleText">Conversion Complete</span>
+          </div>
+          <div class="result-meta" id="resultMeta"></div>
+        </div>
+        <div class="result-header-actions">
+          <div id="accuracyBadgeSlot" class="accuracy-badge-slot"></div>
+          <button class="btn-tertiary--chip" type="button" onclick="app.reset()">
+            <img class="d1-icon d1-icon--sm" src="design-system/icons/Icon_arrow__Left.svg" alt="" aria-hidden="true">
+            Convert Another
+          </button>
+        </div>
+      </div>
+
+      <!-- Editable score title (teacher edit per M10) -->
+      <div class="review-gate__title-edit">
+        <label class="title-edit-label type-b3" for="scoreTitleInput">Score title</label>
+        <input class="title-edit-input" id="scoreTitleInput" type="text"
+               placeholder="Untitled score" aria-label="Editable score title">
+      </div>
+
+      <div class="stats-row" id="resultStats"></div>
+
+      <!-- Playback + Save/Export toolbar (real-piano playback ported from B1) -->
+      <div class="score-toolbar" role="toolbar" aria-label="Playback and export">
+        <div class="score-toolbar__group" aria-label="Playback">
+          <button class="btn-secondary" type="button" id="playBtn" onclick="app.togglePlay()" aria-label="Play score">
+            <img class="d1-icon d1-icon--sm" id="playBtnIcon" src="design-system/icons/Icon_play__Activ-Fill.svg" alt="" aria-hidden="true">
+            <span id="playBtnLabel">Play</span>
+          </button>
+          <button class="btn-tertiary" type="button" id="stopBtn" onclick="app.stopPlayback()" aria-label="Stop playback" disabled>
+            <img class="d1-icon d1-icon--sm" src="design-system/icons/Icon_pause__Active-Fill.svg" alt="" aria-hidden="true">
+            Stop
+          </button>
+          <span class="score-toolbar__hint">
+            <img class="d1-icon d1-icon--sm" src="design-system/icons/Icon_volume__Active-Fill-Default.svg" alt="" aria-hidden="true">
+            <span>GeneralUser piano</span>
+          </span>
+        </div>
+        <div class="score-toolbar__group score-toolbar__group--export" aria-label="Save and export">
+          <button class="btn-tertiary--chip" type="button" id="saveJsonBtn" onclick="app.downloadScoreJSON()" aria-label="Download ScoreJSON">
+            <img class="d1-icon d1-icon--sm" src="design-system/icons/Icon_doc__Default.svg" alt="" aria-hidden="true">
+            ScoreJSON
+          </button>
+          <button class="btn-tertiary--chip" type="button" id="saveXmlBtn" onclick="app.downloadMusicXML()" aria-label="Download MusicXML">
+            <img class="d1-icon d1-icon--sm" src="design-system/icons/Icon_doc__Default.svg" alt="" aria-hidden="true">
+            MusicXML
+          </button>
+          <button class="btn-tertiary--chip" type="button" id="saveSourceBtn" onclick="app.downloadSource()" aria-label="Download original uploaded file" hidden>
+            <img class="d1-icon d1-icon--sm" src="design-system/icons/Icon_arrow__Down.svg" alt="" aria-hidden="true">
+            Original file
+          </button>
+        </div>
+      </div>
+
+      <div id="score-container"></div>
+      <div id="scoreJsonPanel" class="json-panel hidden"></div>
+
+      <p class="result-footnote">
+        <img class="d1-icon d1-icon--sm" src="design-system/icons/Icon_info__Active.svg" alt="" aria-hidden="true">
+        <span id="resultFootnote"></span>
+      </p>
+
+      <!-- Approve / Re-run / Reject action bar -->
+      <footer class="review-gate__actions">
+        <button class="btn-primary" type="button" id="approveBtn" onclick="app.approveScore()">
+          <img class="d1-icon" src="design-system/icons/Icon_check__Active.svg" alt="" aria-hidden="true">
+          Approve &amp; Dispatch
+        </button>
+        <button class="btn-tertiary--chip" type="button" id="rerunBtn" onclick="app.rerunScore()">
+          <img class="d1-icon d1-icon--sm" src="design-system/icons/Icon_refresh__Active.svg" alt="" aria-hidden="true">
+          Re-run
+        </button>
+        <button class="btn-tertiary" type="button" id="rejectBtn" onclick="app.rejectScore()">
+          <img class="d1-icon d1-icon--sm" src="design-system/icons/Icon_flag__Active.svg" alt="" aria-hidden="true">
+          Reject
+        </button>
+      </footer>
+    </section>
+  </section>
+
+</main>
+
+<script src="src/app.js"></script>
+<div id="toast" class="toast" role="alert"></div>
+</body>
+</html>

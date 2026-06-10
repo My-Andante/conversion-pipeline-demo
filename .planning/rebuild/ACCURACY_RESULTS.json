@@ -1,0 +1,36 @@
+{
+ "piano": {
+  "metric": "note_f1",
+  "f1": 0.978,
+  "P": 0.957,
+  "R": 1.0,
+  "n_pred": 46,
+  "n_gt": 44,
+  "sep": "n/a"
+ },
+ "instrumental": {
+  "metric": "note_f1",
+  "f1": 0.979,
+  "P": 0.958,
+  "R": 1.0,
+  "n_pred": 48,
+  "n_gt": 46,
+  "sep": "demucs"
+ },
+ "singing": {
+  "metric": "melody_note_f1 + chord_root",
+  "f1": 0.933,
+  "R": 1.0,
+  "chord_root": 1.0,
+  "n_pred": 16,
+  "n_gt": 14,
+  "sep": "demucs"
+ },
+ "omr": {
+  "metric": "pitch_multiset_f1",
+  "f1": 0.316,
+  "n_pred": 16,
+  "n_gt": 22,
+  "note": "transcribes; Phase-4 OMR"
+ }
+}
