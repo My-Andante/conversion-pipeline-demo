@@ -564,30 +564,51 @@ ScoreJSON.toMusicXML = function (json) {
         return '<step>' + sa[0] + '</step>' + (sa[1] ? '<alter>' + sa[1] + '</alter>' : '') + '<octave>' + m[2] + '</octave>';
     };
 
-    const noteXml = (tokRaw, voice, staff) => {
-        const tok = norm(tokRaw);
-        let div, typ, dot;
+    // Duration (divisions), MusicXML type and dot for a normalised token.
+    const tokDiv = (tok) => {
         if (typeof tok.duration === 'number') {
-            div = numToDiv(tok.duration); typ = divToType(div); dot = '';
-        } else {
-            const code = String(tok.duration || 'q');
-            div = CODE_DIV[code] || 8;
-            typ = CODE_TYPE[code[0]] || 'quarter';
-            dot = code.endsWith('d') ? '<dot/>' : '';
+            const div = numToDiv(tok.duration);
+            return { div, typ: divToType(div), dot: '' };
         }
+        const code = String(tok.duration || 'q');
+        return {
+            div: CODE_DIV[code] || 8,
+            typ: CODE_TYPE[code[0]] || 'quarter',
+            dot: code.endsWith('d') ? '<dot/>' : '',
+        };
+    };
+
+    /**
+     * noteXml(tok, voice, staff, opts)
+     * opts.beam      'begin' | 'continue' | 'end' | null
+     * opts.tieStart  this note is held into the next token (emit start tie + arc)
+     * opts.tieStop   this note continues the previous token (emit stop tie + arc)
+     * Ties apply to every pitch of a chord — split spans keep the same pitch set.
+     */
+    const noteXml = (tokRaw, voice, staff, opts) => {
+        const tok = norm(tokRaw);
+        const o = opts || {};
+        const { div, typ, dot } = tokDiv(tok);
         if (tok.rest) {
             const inv = tok.invisible ? ' print-object="no"' : '';
             return '      <note' + inv + '><rest/><duration>' + div + '</duration><voice>' + voice + '</voice><type>' + typ + '</type>' + dot + '<staff>' + staff + '</staff></note>\n';
         }
         const pitches = [tok.pitch].concat(Array.isArray(tok.chord) ? tok.chord : []);
+        // <tie> = sound, <tied> = the visible arc — both, or OSMD re-strikes the note.
+        const tie = (o.tieStop ? '<tie type="stop"/>' : '') + (o.tieStart ? '<tie type="start"/>' : '');
+        const tied = (o.tieStop ? '<tied type="stop"/>' : '') + (o.tieStart ? '<tied type="start"/>' : '');
         let out = '';
         pitches.forEach((pn, i) => {
             const px = pitchXml(pn);
             if (!px) return;
             const chord = i > 0 ? '<chord/>' : '';
-            const tie = (i === 0 && tok.tie) ? '<tie type="' + (tok.tie === 'stop' ? 'stop' : 'start') + '"/>' : '';
-            const fing = (i === 0 && tok.finger) ? '<notations><technical><fingering>' + tok.finger + '</fingering></technical></notations>' : '';
-            out += '      <note>' + chord + '<pitch>' + px + '</pitch><duration>' + div + '</duration>' + tie + '<voice>' + voice + '</voice><type>' + typ + '</type>' + dot + '<staff>' + staff + '</staff>' + fing + '</note>\n';
+            // Beams ride the chord head only; VexFlow derives secondary beams from type.
+            const beam = (i === 0 && o.beam) ? '<beam number="1">' + o.beam + '</beam>' : '';
+            const notations = [];
+            if (tied) notations.push(tied);
+            if (i === 0 && tok.finger) notations.push('<technical><fingering>' + tok.finger + '</fingering></technical>');
+            const notXml = notations.length ? '<notations>' + notations.join('') + '</notations>' : '';
+            out += '      <note>' + chord + '<pitch>' + px + '</pitch><duration>' + div + '</duration>' + tie + '<voice>' + voice + '</voice><type>' + typ + '</type>' + dot + '<staff>' + staff + '</staff>' + beam + notXml + '</note>\n';
         });
         return out;
     };
@@ -610,6 +631,63 @@ ScoreJSON.toMusicXML = function (json) {
         '  <part-list><score-part id="P1"><part-name>Piano</part-name></score-part></part-list>\n' +
         '  <part id="P1">\n';
 
+    // ── Annotation pass (per staff, across all measures) ──────────────────
+    // Builds parallel option arrays for ties and beams so the emit loop below
+    // stays a flat token walk.
+    //   Ties:  tok.tie === true|'stop' marks a CONTINUATION piece — it gets a
+    //          stop tie, and the previous sounding token gets a start tie.
+    //   Beams: eighths and shorter beam together only within one beat
+    //          (一拍一組); groups break at rests, longer notes, beat
+    //          boundaries and barlines. Compound x/8 meters beat in dotted
+    //          quarters.
+    const beatDiv = (beatsDen === 8 && beatsNum % 3 === 0) ? 12 : Math.round((4 / beatsDen) * DIV);
+    const annotate = (staffKey) => {
+        const perMeasure = measures.map((m) => (m[staffKey] || []).map((t) => {
+            const tok = norm(t);
+            return { tok, opts: {}, div: tokDiv(tok).div };
+        }));
+        // ties — walk the staff stream linearly across measures
+        let prevSounding = null;
+        perMeasure.forEach((toks) => toks.forEach((e) => {
+            if (e.tok.rest) { prevSounding = null; return; }
+            const t = e.tok.tie;
+            if ((t === true || t === 'stop') && prevSounding) {
+                // a stop without a preceding sounding note would draw a
+                // dangling arc — treat such an orphan as a plain strike
+                e.opts.tieStop = true;
+                prevSounding.opts.tieStart = true;
+            } else if (t === 'start') {
+                e.opts.tieStart = true;
+            }
+            prevSounding = e;
+        }));
+        // beams — per measure, groups confined to one beat window
+        perMeasure.forEach((toks) => {
+            let pos = 0;
+            let group = [];
+            const flush = () => {
+                if (group.length >= 2) {
+                    group[0].opts.beam = 'begin';
+                    for (let k = 1; k < group.length - 1; k++) group[k].opts.beam = 'continue';
+                    group[group.length - 1].opts.beam = 'end';
+                }
+                group = [];
+            };
+            toks.forEach((e) => {
+                const beamable = !e.tok.rest && e.tok.pitch && e.div < DIV && !e.tok.invisible;
+                if (!beamable) { flush(); pos += e.div; return; }
+                const beat = Math.floor(pos / beatDiv);
+                if (group.length && beat !== Math.floor((pos - group[group.length - 1].div) / beatDiv)) flush();
+                group.push(e);
+                pos += e.div;
+            });
+            flush();
+        });
+        return perMeasure;
+    };
+    const treble = annotate('treble');
+    const bass = annotate('bass');
+
     measures.forEach((m, idx) => {
         xml += '    <measure number="' + (idx + 1) + '">\n';
         if (idx === 0) {
@@ -621,9 +699,13 @@ ScoreJSON.toMusicXML = function (json) {
                 '<beat-unit>quarter</beat-unit><per-minute>' + tempo + '</per-minute></metronome>' +
                 '</direction-type><sound tempo="' + tempo + '"/></direction>\n';
         }
-        (m.treble || []).forEach((tok) => { xml += noteXml(tok, 1, 1); });
+        treble[idx].forEach((e) => { xml += noteXml(e.tok, 1, 1, e.opts); });
         xml += '      <backup><duration>' + measureDiv + '</duration></backup>\n';
-        (m.bass || []).forEach((tok) => { xml += noteXml(tok, 2, 2); });
+        bass[idx].forEach((e) => { xml += noteXml(e.tok, 2, 2, e.opts); });
+        if (idx === measures.length - 1) {
+            // final (light-heavy) barline — the piece visibly ends
+            xml += '      <barline location="right"><bar-style>light-heavy</bar-style></barline>\n';
+        }
         xml += '    </measure>\n';
     });
 

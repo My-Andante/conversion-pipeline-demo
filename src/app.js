@@ -435,7 +435,25 @@ class ConversionApp {
 
     _bindUploadZone(zone) {
         if (zone.classList.contains('server-unavailable')) return;
-        zone.addEventListener('click', () => document.getElementById('fileInput')?.click());
+        // The <input> is recreated by every renderInputScreen() call, so its
+        // change listener must be (re)bound here. Clearing value afterwards
+        // lets the same file be uploaded twice in a row.
+        document.getElementById('fileInput')?.addEventListener('change', (e) => {
+            const file = e.target.files?.[0];
+            e.target.value = '';
+            if (file) { this._pendingFile = file; this.runPipeline(this.activePath, file); }
+        });
+        // The zone element itself persists across renders — bind it once, or
+        // every lane switch stacks another click handler.
+        if (zone.dataset.uploadBound) return;
+        zone.dataset.uploadBound = '1';
+        zone.addEventListener('click', (e) => {
+            // The programmatic input.click() below bubbles back up to the zone;
+            // re-triggering it cancels the OS file picker mid-selection (the
+            // "every upload needs two clicks" bug).
+            if (e.target && e.target.id === 'fileInput') return;
+            document.getElementById('fileInput')?.click();
+        });
         zone.addEventListener('keydown', (e) => {
             if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); document.getElementById('fileInput')?.click(); }
         });
@@ -445,10 +463,6 @@ class ConversionApp {
             e.preventDefault();
             zone.classList.remove('drag-over');
             const file = e.dataTransfer?.files?.[0];
-            if (file) { this._pendingFile = file; this.runPipeline(this.activePath, file); }
-        });
-        document.getElementById('fileInput')?.addEventListener('change', (e) => {
-            const file = e.target.files?.[0];
             if (file) { this._pendingFile = file; this.runPipeline(this.activePath, file); }
         });
     }
@@ -1341,6 +1355,9 @@ class ConversionApp {
             try { this.osmd.cursor.show(); this.osmd.cursor.reset(); } catch (_) { /* cursor optional */ }
             // Remember the current score's tempo for playback timing.
             this._playTempo = (result && result.scoreJSON && Number(result.scoreJSON.tempo)) || this._tempoFromXML(xml) || 120;
+            // Start decoding the piano soundfont now so the FIRST Play press
+            // doesn't sit through several seconds of decodeAudioData.
+            this._preloadAudio();
         } catch (e) {
             console.error('OSMD render error:', e);
             container.innerHTML = '<p class="score-fallback">Score preview requires the page to be served over HTTP (run: python -m http.server).</p>';
@@ -1382,6 +1399,20 @@ class ConversionApp {
 
     // ── Real-piano playback (ported from B1: WebAudioFont + OSMD cursor) ───
 
+    /** Kick off AudioContext creation + preset decode ahead of the first Play.
+     *  Safe before any user gesture: the context stays 'suspended' but
+     *  decodeAudioData still runs, so _ensureAudio() later finds warm buffers. */
+    _preloadAudio() {
+        try {
+            if (!this.audioContext) {
+                this.audioContext = new (window.AudioContext || window.webkitAudioContext)();
+            }
+            if (this.player && this.pianoPreset) {
+                this.player.adjustPreset(this.audioContext, this.pianoPreset);
+            }
+        } catch (_) { /* audio stays lazy — _ensureAudio() will retry on Play */ }
+    }
+
     /** Lazily create / resume the AudioContext and load the piano preset (gesture-safe). */
     async _ensureAudio() {
         if (!this.audioContext) {
@@ -1421,24 +1452,7 @@ class ConversionApp {
         if (!sj || !Array.isArray(sj.measures)) return [];
         const [tNum, tDen] = String(sj.time || '4/4').split('/').map(Number);
         const beats = (tNum || 4) * (4 / (tDen || 4));            // quarters per measure
-        const baseBpm = Number(sj.tempo) || 120;
-
-        // Piecewise tempo map: quarter position -> seconds (falls back to flat tempo).
-        const map = (Array.isArray(sj.tempoMap) ? sj.tempoMap : [])
-            .filter((e) => e && isFinite(e.beat) && e.beat >= 0 && Number(e.bpm) > 0)
-            .map((e) => ({ beat: Number(e.beat), bpm: Number(e.bpm) }))
-            .sort((a, b) => a.beat - b.beat);
-        if (!map.length || map[0].beat > 1e-9) map.unshift({ beat: 0, bpm: baseBpm });
-        let accSec = 0;
-        const segs = map.map((e, i) => {
-            if (i > 0) accSec += (e.beat - map[i - 1].beat) * 60 / map[i - 1].bpm;
-            return { beat: e.beat, bpm: e.bpm, sec: accSec };
-        });
-        const qSec = (qPos) => {
-            let i = segs.length - 1;
-            while (i > 0 && segs[i].beat > qPos + 1e-9) i--;
-            return segs[i].sec + (qPos - segs[i].beat) * 60 / segs[i].bpm;
-        };
+        const qSec = this._tempoMapper(sj);
 
         const baseQ = { w: 4, h: 2, q: 1, e: 0.5, s: 0.25, t: 0.125 };
         const durQ = (code) => {
@@ -1507,6 +1521,28 @@ class ConversionApp {
         return events;
     }
 
+    /** Piecewise tempo map for a ScoreJSON: quarter position -> seconds.
+     *  Falls back to the flat `tempo` when no tempoMap is present. Shared by
+     *  the audio scheduler and the cursor animator so they can never drift. */
+    _tempoMapper(sj) {
+        const baseBpm = Number(sj && sj.tempo) || 120;
+        const map = (Array.isArray(sj && sj.tempoMap) ? sj.tempoMap : [])
+            .filter((e) => e && isFinite(e.beat) && e.beat >= 0 && Number(e.bpm) > 0)
+            .map((e) => ({ beat: Number(e.beat), bpm: Number(e.bpm) }))
+            .sort((a, b) => a.beat - b.beat);
+        if (!map.length || map[0].beat > 1e-9) map.unshift({ beat: 0, bpm: baseBpm });
+        let accSec = 0;
+        const segs = map.map((e, i) => {
+            if (i > 0) accSec += (e.beat - map[i - 1].beat) * 60 / map[i - 1].bpm;
+            return { beat: e.beat, bpm: e.bpm, sec: accSec };
+        });
+        return (qPos) => {
+            let i = segs.length - 1;
+            while (i > 0 && segs[i].beat > qPos + 1e-9) i--;
+            return segs[i].sec + (qPos - segs[i].beat) * 60 / segs[i].bpm;
+        };
+    }
+
     /** "C#4" / "Bb3" -> MIDI number. */
     _nameToMidi(name) {
         const m = /^([A-G])([#b]?)(-?\d+)$/.exec(String(name || ''));
@@ -1531,29 +1567,53 @@ class ConversionApp {
 
         const ctx = this.audioContext;
         const startAt = ctx.currentTime + 0.12;
+        const t0 = events[0].t;          // skip leading silence — sound starts immediately
         events.forEach((ev) => {
             if (!this.player || !this.pianoPreset) return;
             const zone = this.player.findZone(ctx, this.pianoPreset, ev.midi);
             if (zone && zone.buffer && zone.buffer.length > 0) {
                 this.player.queueWaveTable(ctx, ctx.destination, this.pianoPreset,
-                    startAt + ev.t, ev.midi, Math.min(ev.dur, 12), 0.5);
+                    startAt + ev.t - t0, ev.midi, Math.min(ev.dur, 12), 0.5);
             }
         });
-        this._animateCursor(events, startAt);
-        const endT = Math.max(...events.map((e) => e.t + e.dur));
+        this._animateCursor(events, startAt, t0);
+        const endT = Math.max(...events.map((e) => e.t + e.dur)) - t0;
         this._playEndTimer = setTimeout(() => this.stopPlayback(), (endT + 0.4) * 1000);
     }
 
-    /** Step the OSMD cursor in real time to follow the scheduled audio. */
-    _animateCursor(events, startAt) {
+    /** Step the OSMD cursor in real time to follow the scheduled audio.
+     *
+     *  The cursor advances over EVERY voice-entry timestamp in the score —
+     *  rests and tie continuations included — so it must be scheduled from the
+     *  score's own iterator timeline, not from the audio onsets (one next()
+     *  per onset left it drifting hundreds of steps behind by the last page).
+     *  Timestamps map through the same tempo mapper as the audio schedule. */
+    _animateCursor(events, startAt, t0) {
         if (!this.osmd || !this.osmd.cursor) return;
         try { this.osmd.cursor.reset(); this.osmd.cursor.show(); } catch (_) { return; }
-        const onsets = Array.from(new Set(events.map((e) => Number(e.t.toFixed(4))))).sort((a, b) => a - b);
         const ctx = this.audioContext;
         this._cursorTimers = [];
-        onsets.forEach((t, i) => {
-            if (i === 0) return;                                 // cursor already on the first onset
-            const delayMs = (startAt + t - ctx.currentTime) * 1000;
+
+        let stampsSec = null;
+        try {
+            // RealValue is in whole notes -> quarters = x4.
+            const it = this.osmd.cursor.Iterator.clone();
+            const qSec = this._tempoMapper(this._currentScoreJSON || {});
+            stampsSec = [];
+            let guard = 0;
+            while (!it.EndReached && guard++ < 200000) {
+                stampsSec.push(qSec(it.CurrentEnrolledTimestamp.RealValue * 4));
+                it.moveToNext();
+            }
+        } catch (_) { stampsSec = null; }
+        if (!stampsSec || !stampsSec.length) {
+            // Fallback (old behaviour): one step per distinct audio onset.
+            stampsSec = Array.from(new Set(events.map((e) => Number(e.t.toFixed(4))))).sort((a, b) => a - b);
+        }
+
+        stampsSec.forEach((t, i) => {
+            if (i === 0) return;                                 // cursor already on the first entry
+            const delayMs = (startAt + t - (t0 || 0) - ctx.currentTime) * 1000;
             this._cursorTimers.push(setTimeout(() => {
                 if (!this.isPlaying) return;
                 try { this.osmd.cursor.next(); } catch (_) { /* end of score */ }
