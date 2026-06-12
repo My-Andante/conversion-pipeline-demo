@@ -92,7 +92,7 @@ const PIPELINES = {
     musicxml: {
         label: 'MusicXML',
         icon: 'Icon_doc__Default.svg',
-        accept: '.xml,.musicxml,.json',
+        accept: '.xml,.musicxml,.mxl,.json',
         steps: [
             { id: 'parse',   icon: 'Icon_doc__Default.svg',    title: 'Parse & validate',    detail: 'DOM-parse the MusicXML; check for <score-partwise> root; count parts, measures, notes' },
             { id: 'convert', icon: 'Icon_refresh__Active.svg', title: 'Convert to ScoreJSON', detail: 'ScoreJSON.js — proprietary ~10x compression format (patent-pending); in-browser' },
@@ -596,7 +596,12 @@ class ConversionApp {
             const name = file.name.toLowerCase();
             reader.onload = (e) => {
                 const content = e.target.result;
-                if (name.endsWith('.xml') || name.endsWith('.musicxml')) {
+                if (name.endsWith('.mxl')) {
+                    // compressed MusicXML (zip) — unzip in-browser
+                    this._unzipMXL(content)
+                        .then((xml) => resolve({ type: 'musicxml', content: xml, filename: file.name }))
+                        .catch((err) => reject(new Error(`Could not read .mxl: ${err.message}`)));
+                } else if (name.endsWith('.xml') || name.endsWith('.musicxml')) {
                     resolve({ type: 'musicxml', content, filename: file.name });
                 } else if (name.endsWith('.json')) {
                     try { resolve({ type: 'scorejson', content: JSON.parse(content), filename: file.name }); }
@@ -619,6 +624,59 @@ class ConversionApp {
             if (/\.(xml|musicxml|json)$/.test(name)) reader.readAsText(file);
             else reader.readAsArrayBuffer(file);
         });
+    }
+
+    /**
+     * Extract the score document from a compressed MusicXML (.mxl) container.
+     * Minimal zip reader: walk the central directory (handles data-descriptor
+     * zips that hide sizes in the local headers), inflate with the browser's
+     * DecompressionStream. Picks the first non-META-INF .xml/.musicxml entry
+     * (the MXL rootfile convention used by MuseScore/Finale exports).
+     * @param {ArrayBuffer} buf
+     * @returns {Promise<string>} the MusicXML text
+     */
+    async _unzipMXL(buf) {
+        if (typeof DecompressionStream === 'undefined') {
+            throw new Error('this browser cannot unzip .mxl — upload the uncompressed .musicxml instead');
+        }
+        const dv = new DataView(buf);
+        const dec = new TextDecoder();
+        // locate End-Of-Central-Directory (scan back over the trailing comment)
+        let eocd = -1;
+        for (let i = dv.byteLength - 22; i >= Math.max(0, dv.byteLength - 22 - 65536); i--) {
+            if (dv.getUint32(i, true) === 0x06054b50) { eocd = i; break; }
+        }
+        if (eocd < 0) throw new Error('not a zip archive');
+        const count = dv.getUint16(eocd + 10, true);
+        let off = dv.getUint32(eocd + 16, true);
+        if (count === 0xFFFF || off === 0xFFFFFFFF) throw new Error('Zip64 archives are not supported');
+        const entries = [];
+        for (let i = 0; i < count && off + 46 <= dv.byteLength; i++) {
+            if (dv.getUint32(off, true) !== 0x02014b50) break;
+            const method = dv.getUint16(off + 10, true);
+            const csize = dv.getUint32(off + 20, true);
+            const nameLen = dv.getUint16(off + 28, true);
+            const extraLen = dv.getUint16(off + 30, true);
+            const cmtLen = dv.getUint16(off + 32, true);
+            const lho = dv.getUint32(off + 42, true);
+            const name = dec.decode(new Uint8Array(buf, off + 46, nameLen));
+            entries.push({ name, method, csize, lho });
+            off += 46 + nameLen + extraLen + cmtLen;
+        }
+        const entry = entries.find((e) =>
+            !e.name.startsWith('META-INF/') && /\.(xml|musicxml)$/i.test(e.name))
+            || entries.find((e) => !e.name.startsWith('META-INF/') && !e.name.endsWith('/'));
+        if (!entry) throw new Error('no score document inside the archive');
+        // data position from the entry's local header (its name/extra lengths differ)
+        const lnameLen = dv.getUint16(entry.lho + 26, true);
+        const lextraLen = dv.getUint16(entry.lho + 28, true);
+        const dataStart = entry.lho + 30 + lnameLen + lextraLen;
+        const raw = new Uint8Array(buf, dataStart, entry.csize);
+        if (entry.method === 0) return dec.decode(raw);
+        if (entry.method !== 8) throw new Error(`unsupported compression method ${entry.method}`);
+        const ds = new DecompressionStream('deflate-raw');
+        const stream = new Blob([raw]).stream().pipeThrough(ds);
+        return await new Response(stream).text();
     }
 
     // ── MusicXML lane (in-browser) ────────────────────────────────────────
@@ -704,17 +762,24 @@ class ConversionApp {
         await this._delay(200);
 
         stepCallback('quantize', 'running', 'Quantising');
-        stepCallback('quantize', 'done', `${Math.round(midi.duration)}s, ${midi.header.ppq} PPQ`);
-        await this._delay(200);
-
-        stepCallback('voice', 'running', 'Separating voices');
-        const { trebleNotes, bassNotes } = this._separateMIDIVoices(midi);
         const tempo = midi.header.tempos[0]?.bpm || 120;
         const ts = midi.header.timeSignatures[0]?.timeSignature || [4, 4];
         const beats = ts[0] * (4 / (ts[1] || 4));   // quarters per measure (same contract as playback)
         const ppq = midi.header.ppq;
-        const trebleStaff = this._notesToStaffMeasures(trebleNotes, tempo, ppq, beats);
-        const bassStaff = this._notesToStaffMeasures(bassNotes, tempo, ppq, beats);
+        // Shared quantization estimate over BOTH hands (performance-timed MIDI
+        // floats off the grid by a near-constant phase) + key detection.
+        const allNotes = midi.tracks.reduce((acc, t) => acc.concat(t.notes), []);
+        const keyInfo = this._detectKey(allNotes);
+        const qopts = { ...this._estimateQuantization(allNotes, tempo, ppq, beats), useFlats: keyInfo.useFlats };
+        const gridLabel = qopts.grid === 0.25 ? '16th grid' : '32nd grid';
+        const offLabel = Math.abs(qopts.offsetQ) > 0.01 ? `, re-aligned ${qopts.offsetQ.toFixed(2)} beats` : '';
+        stepCallback('quantize', 'done', `${Math.round(midi.duration)}s, ${midi.header.ppq} PPQ (${gridLabel}${offLabel})`);
+        await this._delay(200);
+
+        stepCallback('voice', 'running', 'Separating voices');
+        const { trebleNotes, bassNotes } = this._separateMIDIVoices(midi);
+        const trebleStaff = this._notesToStaffMeasures(trebleNotes, tempo, ppq, beats, qopts);
+        const bassStaff = this._notesToStaffMeasures(bassNotes, tempo, ppq, beats, qopts);
         const maxMeasure = Math.max(trebleStaff.length, bassStaff.length, 1) - 1;
         const measuresArr = [];
         for (let i = 0; i <= maxMeasure; i++) {
@@ -725,16 +790,22 @@ class ConversionApp {
 
         stepCallback('export', 'running', 'Generating MusicXML');
         // Expression layers (optional ScoreJSON fields, honoured by playback):
-        // full rubato tempo map + CC64 sustain-pedal spans.
+        // full rubato tempo map + CC64 sustain-pedal spans. Both live on the
+        // note timeline, so they ride the same alignment + trim as the notes.
+        const mapQ = (x) => Math.max((qopts.alignFn ? qopts.alignFn(x) : x + (qopts.offsetQ || 0)) - (qopts.trimQ || 0), 0);
         const tempoMap = (midi.header.tempos || [])
-            .map((t) => ({ beat: Math.round((t.ticks / ppq) * 1e4) / 1e4, bpm: Math.round(t.bpm * 100) / 100 }))
+            .map((t) => ({ beat: Math.round(mapQ(t.ticks / ppq) * 1e4) / 1e4, bpm: Math.round(t.bpm * 100) / 100 }))
             .filter((t) => isFinite(t.beat) && t.bpm > 0)
+            .sort((a, b) => a.beat - b.beat)   // piecewise detrend may locally reorder
             .filter((t, i, arr) => i === 0 || Math.abs(t.bpm - arr[i - 1].bpm) > 0.005);
-        const pedal = this._pedalSpansFromMIDI(midi, ppq);
+        const pedal = this._pedalSpansFromMIDI(midi, ppq)
+            .map((s) => ({ start: mapQ(s.start), end: mapQ(s.end) }))
+            .filter((s) => s.end > s.start);
         const scoreJSON = {
             title: sanitizeTitle(midi.name, fileData.filename.replace(/\.midi?$/i, '')),
             composer: 'MIDI Import',
-            tempo,
+            key: keyInfo.key,
+            tempo: Math.round(tempo * 100) / 100,    // 139.9998 must not display as 139
             time: `${ts[0]}/${ts[1]}`,
             measures: measuresArr,  // builder tiles each measure exactly — no padding needed
             ...(tempoMap.length > 1 ? { tempoMap } : {}),
@@ -831,12 +902,14 @@ class ConversionApp {
             const midiNotes = this._audioUtils.basicPitchToMIDINotes(noteEvents, bpm, 480);
             const mock = { tracks: [{ notes: midiNotes }], name: fileData.filename, header: { tempos: [{ bpm }], timeSignatures: [[4, 4]], ppq: 480 } };
             const { trebleNotes, bassNotes } = this._separateMIDIVoices(mock);
-            const tStaff = this._notesToStaffMeasures(trebleNotes, bpm, 480, 4);
-            const bStaff = this._notesToStaffMeasures(bassNotes, bpm, 480, 4);
+            const keyInfo = this._detectKey(midiNotes);
+            const qopts = { ...this._estimateQuantization(midiNotes, bpm, 480, 4), useFlats: keyInfo.useFlats };
+            const tStaff = this._notesToStaffMeasures(trebleNotes, bpm, 480, 4, qopts);
+            const bStaff = this._notesToStaffMeasures(bassNotes, bpm, 480, 4, qopts);
             const maxM = Math.max(tStaff.length, bStaff.length, 1) - 1;
             const measuresArr = [];
             for (let i = 0; i <= maxM; i++) measuresArr.push({ treble: tStaff[i] || this._restMeasureTokens(4), bass: bStaff[i] || this._restMeasureTokens(4) });
-            const scoreJSON = { title: fileData.filename || 'Recorded Audio', composer: 'Basic Pitch', tempo: bpm, time: '4/4', measures: ScoreJSON.equalizeMeasureWidths(measuresArr, 4) };
+            const scoreJSON = { title: fileData.filename || 'Recorded Audio', composer: 'Basic Pitch', key: keyInfo.key, tempo: bpm, time: '4/4', measures: ScoreJSON.equalizeMeasureWidths(measuresArr, 4) };
             const musicXML = ScoreJSON.toMusicXML(scoreJSON);
             const total = trebleNotes.length + bassNotes.length;
             stepCallback('export', 'done', `${total} notes, ${maxM + 1} measures (in-browser draft)`);
@@ -937,28 +1010,38 @@ class ConversionApp {
      * @param ppq     MIDI pulses per quarter
      * @param beatsPerMeasure  measure length in QUARTER notes (e.g. 1.5 for 3/8)
      */
-    _notesToStaffMeasures(notes, bpm, ppq, beatsPerMeasure) {
-        const GRID = 0.125;                                       // 32nd-note grid
+    _notesToStaffMeasures(notes, bpm, ppq, beatsPerMeasure, qopts) {
+        const o = qopts || {};
+        const GRID = o.grid || 0.125;                             // onset grid (quarters)
+        const ALIGN = o.alignFn || ((x) => x + (o.offsetQ || 0)); // timing correction
+        const TRIM = o.trimQ || 0;                                // leading empty measures
+        const FLATS = !!o.useFlats;
         const CODES = [[4,'w'],[3,'hd'],[2,'h'],[1.5,'qd'],[1,'q'],[0.75,'ed'],[0.5,'e'],[0.375,'sd'],[0.25,'s'],[0.125,'t']];
         const CODE_Q = { w:4, hd:3, h:2, qd:1.5, q:1, ed:0.75, e:0.5, sd:0.375, s:0.25, t:0.125 };
+        // note-value vocabulary a single token may carry (no ties needed)
+        const VOCAB = [4, 3, 2, 1.5, 1, 0.75, 0.5, 0.375, 0.25, 0.125].filter((v) => v >= GRID - 1e-9);
         const toQ = (n) => (n.ticks != null ? n.ticks / (ppq || 480) : (n.time || 0) * bpm / 60);
         const gateQ = (n) => (n.durationTicks != null ? n.durationTicks / (ppq || 480) : (n.duration || 0) * bpm / 60);
         const q = (x) => Math.round(x / GRID) * GRID;
         const splitDur = (dur) => {
-            const out = []; let rem = Math.round(dur / GRID) * GRID; let guard = 0;
-            while (rem >= GRID - 1e-6 && guard++ < 64) {
-                for (const [qv, c] of CODES) { if (qv <= rem + 1e-6) { out.push(c); rem = Math.round((rem - qv) / GRID) * GRID; break; } }
+            const out = []; let rem = Math.round(dur / 0.125) * 0.125; let guard = 0;
+            while (rem >= 0.125 - 1e-6 && guard++ < 64) {
+                for (const [qv, c] of CODES) { if (qv <= rem + 1e-6) { out.push(c); rem = Math.round((rem - qv) / 0.125) * 0.125; break; } }
             }
             return out.length ? out : ['t'];
         };
-        const NAMES = ['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
+        const SHARPS = ['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
+        const FLATN = ['C','Db','D','Eb','E','F','Gb','G','Ab','A','Bb','B'];
+        const NAMES = FLATS ? FLATN : SHARPS;
         const mName = (m) => NAMES[m % 12] + (Math.floor(m / 12) - 1);
 
-        // group simultaneous notes into chords; keep the longest gate per pitch
+        // group simultaneous notes into chords; keep the longest RAW gate per
+        // pitch (gates snap to the note-value vocabulary later, with full
+        // precision still available)
         const groups = new Map();
         notes.forEach((n) => {
-            const on = q(toQ(n));
-            const gate = Math.max(q(gateQ(n)), GRID);
+            const on = Math.max(q(ALIGN(toQ(n))) - TRIM, 0);
+            const gate = Math.max(gateQ(n), GRID);
             if (!groups.has(on)) groups.set(on, new Map());
             const g = groups.get(on);
             g.set(n.midi, Math.max(g.get(n.midi) || 0, gate));
@@ -969,11 +1052,34 @@ class ConversionApp {
         if (!events.length) return [];
 
         const beats = beatsPerMeasure;
-        // clamp each gate at the next onset -> non-overlapping spans
+        // Gate -> notated duration:
+        //  1. legato snap: a small gap to the next same-hand onset (performance
+        //     "release early") is absorbed into the note instead of becoming a
+        //     32nd-rest;
+        //  2. vocabulary snap: round to the nearest single note value so 95%-
+        //     gates ("0.948 of a quarter") notate as the quarter they mean;
+        //  3. clamp at the next onset -> non-overlapping spans on the grid.
+        const LEGATO_GAP = Math.max(GRID, 0.25);
         const spans = events.map(([on, pitches, gate], k) => {
-            let end = on + Math.max(gate, GRID);
-            if (k + 1 < events.length) end = Math.min(end, events[k + 1][0]);
-            return [on, Math.max(end, on + GRID), pitches];
+            const nextOn = k + 1 < events.length ? events[k + 1][0] : Infinity;
+            let dur = gate;
+            if (nextOn - (on + dur) <= LEGATO_GAP + 1e-6) dur = nextOn - on;     // legato fill
+            let best = null;
+            for (const v of VOCAB) {
+                if (Math.abs(dur - v) <= Math.max(GRID / 2, 0.12 * dur) + 1e-9
+                    && (best == null || Math.abs(dur - v) < Math.abs(dur - best))) best = v;
+            }
+            if (best != null) {
+                dur = best;
+            } else {
+                // longer than any single note value (ties ahead) — a 95%-gate
+                // miss grows with length, so snap the END to the nearest beat
+                const endBeat = Math.round(on + dur);
+                if (endBeat > on && Math.abs(on + dur - endBeat) <= Math.max(GRID, 0.12 * dur)) dur = endBeat - on;
+                else dur = Math.max(q(dur), GRID);
+            }
+            if (nextOn !== Infinity) dur = Math.min(dur, nextOn - on);
+            return [on, on + Math.max(dur, GRID), pitches];
         });
         const lastEnd = spans[spans.length - 1][1];
         const nMeasures = Math.floor((lastEnd - 1e-6) / beats) + 1;
@@ -1008,6 +1114,169 @@ class ConversionApp {
         });
         if (pos < nMeasures * beats - 1e-6) emitSpan(pos, nMeasures * beats, null);
         return measures;
+    }
+
+    /**
+     * Estimate quantization parameters from ALL notes (both hands together —
+     * the grid must be shared or the staves drift apart).
+     *
+     * Performance-timed MIDI (tuneonmusic, recorded takes) floats off the
+     * notation grid by a near-constant phase: every onset lands at e.g.
+     * x.41 quarters. Quantizing that raw turns quarter notes into dotted/tied
+     * syncopation everywhere (issue #1 follow-up: "completely wrong" score).
+     *
+     *  - grid: 16th by default; 32nd only when the inter-onset histogram
+     *    actually contains 32nd-sized gaps.
+     *  - offsetQ: circular-mean phase on the grid period, then the whole-grid
+     *    translation that puts the most onsets on integer quarters (strong
+     *    beats) — phase alone cannot tell the beat from the offbeat.
+     *  - trimQ: whole empty leading measures dropped (scores start at bar 1;
+     *    playback already skips leading silence).
+     */
+    _estimateQuantization(notes, bpm, ppq, beatsPerMeasure) {
+        const toQ = (n) => (n.ticks != null ? n.ticks / (ppq || 480) : (n.time || 0) * bpm / 60);
+        const ons = notes.map(toQ).sort((a, b) => a - b);
+        if (!ons.length) return { offsetQ: 0, trimQ: 0, grid: 0.125 };
+
+        // adaptive grid: any real 32nd-note content?
+        const iois = [];
+        for (let i = 1; i < ons.length; i++) {
+            const d = ons[i] - ons[i - 1];
+            if (d > 1e-6) iois.push(d);
+        }
+        const n32 = iois.filter((d) => d > 0.09 && d < 0.19).length;
+        const grid = iois.length && n32 / iois.length > 0.05 ? 0.125 : 0.25;
+
+        // ── drift track: windowed median deviation from the EIGHTH grid ──
+        // (quarters and offbeat eighths share the same phase mod 0.5; true
+        // sixteenths are a minority, and the median shrugs them off)
+        const W = 16;                                       // window size, quarters
+        const wins = new Map();
+        ons.forEach((on) => {
+            const w = Math.floor(on / W);
+            if (!wins.has(w)) wins.set(w, []);
+            wins.get(w).push(on);
+        });
+        const track = [];                                   // [{q, dev}] unwrapped
+        let prevDev = null;
+        [...wins.keys()].sort((a, b) => a - b).forEach((w) => {
+            const os = wins.get(w);
+            if (os.length < 4) return;
+            // candidate deviations from the 0.5 grid, unwrapped near prevDev
+            const devs = os.map((on) => {
+                let d = on - Math.round(on / 0.5) * 0.5;    // (-0.25, 0.25]
+                if (prevDev != null) {
+                    while (d - prevDev > 0.25) d -= 0.5;
+                    while (d - prevDev < -0.25) d += 0.5;
+                }
+                return d;
+            }).sort((a, b) => a - b);
+            const med = devs[Math.floor(devs.length / 2)];
+            track.push({ q: (w + 0.5) * W, dev: med });
+            prevDev = med;
+        });
+
+        const devRange = track.length
+            ? Math.max(...track.map((t) => t.dev)) - Math.min(...track.map((t) => t.dev)) : 0;
+
+        // alignFn maps a raw onset to the corrected timeline (before grid snap)
+        let alignFn;
+        if (track.length >= 2 && devRange > grid / 2) {
+            // rubato / tempo-mismatch drift — piecewise-linear detrend
+            const devAt = (qPos) => {
+                if (qPos <= track[0].q) return track[0].dev;
+                for (let i = 1; i < track.length; i++) {
+                    if (qPos <= track[i].q) {
+                        const a = track[i - 1], b = track[i];
+                        return a.dev + (b.dev - a.dev) * (qPos - a.q) / (b.q - a.q);
+                    }
+                }
+                return track[track.length - 1].dev;
+            };
+            alignFn = (on) => on - devAt(on);
+        } else {
+            // near-constant phase — circular mean on the grid period
+            let sx = 0, sy = 0;
+            ons.forEach((on) => {
+                const a = ((on % grid) / grid) * 2 * Math.PI;
+                sx += Math.cos(a); sy += Math.sin(a);
+            });
+            const r = Math.sqrt(sx * sx + sy * sy) / ons.length;
+            let offsetQ = 0;
+            if (r > 0.5) {
+                const phase = Math.atan2(sy, sx) / (2 * Math.PI) * grid;
+                offsetQ = -phase;
+            }
+            alignFn = (on) => on + offsetQ;
+        }
+
+        // beat-phase disambiguation: phase/detrend alone cannot tell the beat
+        // from the offbeat — try whole-grid translations, keep the one landing
+        // the most onsets on integer quarters
+        let bestShift = 0, bestHits = -1;
+        for (let k = -Math.round(0.5 / grid); k <= Math.round(0.5 / grid); k++) {
+            const s = k * grid;
+            const hits = ons.reduce((acc, on) => {
+                const p = alignFn(on) + s;
+                return acc + (Math.abs(p - Math.round(p)) < grid / 2 - 1e-9 ? 1 : 0);
+            }, 0);
+            if (hits > bestHits) { bestHits = hits; bestShift = s; }
+        }
+        const baseAlign = alignFn;
+        const gridAlign = (on) => baseAlign(on) + bestShift;
+
+        // bar-phase: the beat grid still leaves "which beat is the downbeat"
+        // open. Long notes (sustained chords) overwhelmingly START on
+        // downbeats — let them vote for the whole-beat translation.
+        const beats = beatsPerMeasure || 4;
+        const gateOf = (n) => (n.durationTicks != null ? n.durationTicks / (ppq || 480) : (n.duration || 0) * bpm / 60);
+        const longOns = notes.filter((n) => gateOf(n) >= 1.2).map(toQ);
+        let barShift = 0;
+        if (longOns.length >= 6 && beats > 1) {
+            let bestBar = -1;
+            for (let k = 0; k < Math.round(beats); k++) {
+                const score = longOns.reduce((acc, on) => {
+                    const p = ((gridAlign(on) + k) % beats + beats) % beats;
+                    return acc + (p < grid / 2 || p > beats - grid / 2 ? 1 : 0);
+                }, 0);
+                if (score > bestBar) { bestBar = score; barShift = k; }
+            }
+        }
+        const finalAlign = (on) => gridAlign(on) + barShift;
+
+        const first = Math.round(finalAlign(ons[0]) / grid) * grid;
+        const trimQ = Math.max(Math.floor((first + 1e-6) / beats), 0) * beats;
+        const offsetQ = finalAlign(0);                       // representative (for the UI label)
+        return { offsetQ, trimQ, grid, alignFn: finalAlign };
+    }
+
+    /**
+     * Pick the major/minor-agnostic key signature whose diatonic set covers
+     * the most notes, and whether to spell accidentals as flats. Keeps the
+     * rendered score from drowning in accidentals (C-major was hardcoded).
+     * Returns { key: 'G', fifths: 1, useFlats: false } style data.
+     */
+    _detectKey(notes) {
+        const KEYS = [
+            { key: 'C', fifths: 0 }, { key: 'G', fifths: 1 }, { key: 'D', fifths: 2 },
+            { key: 'A', fifths: 3 }, { key: 'E', fifths: 4 }, { key: 'B', fifths: 5 },
+            { key: 'F#', fifths: 6 }, { key: 'F', fifths: -1 }, { key: 'Bb', fifths: -2 },
+            { key: 'Eb', fifths: -3 }, { key: 'Ab', fifths: -4 }, { key: 'Db', fifths: -5 },
+            { key: 'Gb', fifths: -6 },
+        ];
+        const hist = new Array(12).fill(0);
+        notes.forEach((n) => { hist[n.midi % 12]++; });
+        const MAJOR = [0, 2, 4, 5, 7, 9, 11];
+        let best = KEYS[0], bestScore = -1;
+        KEYS.forEach((k) => {
+            const tonic = ((k.fifths * 7) % 12 + 12) % 12;
+            const score = MAJOR.reduce((acc, deg) => acc + hist[(tonic + deg) % 12], 0);
+            // prefer fewer signature accidentals on ties
+            if (score > bestScore + 1e-9 || (Math.abs(score - bestScore) < 1e-9 && Math.abs(k.fifths) < Math.abs(best.fifths))) {
+                best = k; bestScore = score;
+            }
+        });
+        return { key: best.key, fifths: best.fifths, useFlats: best.fifths < 0 };
     }
 
     /** A full measure of rests for a measure length in quarters (e.g. 1.5 -> [qd]). */
@@ -1063,10 +1332,33 @@ class ConversionApp {
                 if (lh.includes(idx)) t.notes.forEach((n) => bassNotes.push(n));
                 else if (rh.includes(idx)) t.notes.forEach((n) => trebleNotes.push(n));
             });
-        } else {
-            const MIDDLE_C = 60;
-            midi.tracks.forEach((t) => t.notes.forEach((n) => (n.midi >= MIDDLE_C ? trebleNotes : bassNotes).push(n)));
+            return { trebleNotes, bassNotes };
         }
+        // Multi-track files usually already keep one hand per track. Splitting
+        // those by a C4 pitch cutoff tears chords apart (a held D4 in the
+        // left-hand chord lands in the melody staff and gets clamped by the
+        // next melody note). Cluster whole tracks by mean pitch instead, at
+        // the largest gap between sorted track means.
+        const noteTracks = midi.tracks.filter((t) => t.notes.length);
+        if (noteTracks.length >= 2) {
+            const means = noteTracks.map((t) => t.notes.reduce((a, n) => a + n.midi, 0) / t.notes.length);
+            const order = means.map((m, i) => [m, i]).sort((a, b) => a[0] - b[0]);
+            let cut = 1, bestGap = -1;
+            for (let i = 1; i < order.length; i++) {
+                const g = order[i][0] - order[i - 1][0];
+                if (g > bestGap) { bestGap = g; cut = i; }
+            }
+            if (bestGap >= 5) {                      // clearly separated registers
+                const bassIdx = new Set(order.slice(0, cut).map((x) => x[1]));
+                noteTracks.forEach((t, i) => {
+                    t.notes.forEach((n) => (bassIdx.has(i) ? bassNotes : trebleNotes).push(n));
+                });
+                if (trebleNotes.length && bassNotes.length) return { trebleNotes, bassNotes };
+                trebleNotes.length = 0; bassNotes.length = 0;
+            }
+        }
+        const MIDDLE_C = 60;
+        midi.tracks.forEach((t) => t.notes.forEach((n) => (n.midi >= MIDDLE_C ? trebleNotes : bassNotes).push(n)));
         return { trebleNotes, bassNotes };
     }
 
