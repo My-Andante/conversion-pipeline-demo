@@ -699,10 +699,13 @@ ScoreJSON.toMusicXML = function (json) {
                 '<beat-unit>quarter</beat-unit><per-minute>' + tempo + '</per-minute></metronome>' +
                 '</direction-type><sound tempo="' + tempo + '"/></direction>\n';
         }
+        if (m.repeatStart) xml += '      <barline location="left"><repeat direction="forward"/></barline>\n';
         treble[idx].forEach((e) => { xml += noteXml(e.tok, 1, 1, e.opts); });
         xml += '      <backup><duration>' + measureDiv + '</duration></backup>\n';
         bass[idx].forEach((e) => { xml += noteXml(e.tok, 2, 2, e.opts); });
-        if (idx === measures.length - 1) {
+        if (m.repeatEnd) {
+            xml += '      <barline location="right"><repeat direction="backward"/></barline>\n';
+        } else if (idx === measures.length - 1) {
             // final (light-heavy) barline — the piece visibly ends
             xml += '      <barline location="right"><bar-style>light-heavy</bar-style></barline>\n';
         }

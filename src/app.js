@@ -785,6 +785,11 @@ class ConversionApp {
         for (let i = 0; i <= maxMeasure; i++) {
             measuresArr.push({ treble: trebleStaff[i] || this._restMeasureTokens(beats), bass: bassStaff[i] || this._restMeasureTokens(beats) });
         }
+        // Fold a played-out repeat: a performance MIDI plays repeats out (e.g.
+        // bars 5..39 sounded again as 40..74); the published score writes one
+        // copy with a repeat barline. Collapse the largest exact consecutive
+        // repeated block back to repeat barlines so the score matches the sheet.
+        this._foldRepeats(measuresArr);
         stepCallback('voice', 'done', `${trebleNotes.length} treble, ${bassNotes.length} bass notes`);
         await this._delay(200);
 
@@ -816,11 +821,11 @@ class ConversionApp {
         const countStaff = (staff) => staff.reduce((acc, toks) => acc + toks.reduce(
             (a, tok) => a + (!tok.rest && !tok.tie ? 1 + (tok.chord ? tok.chord.length : 0) : 0), 0), 0);
         const totalNotes = countStaff(trebleStaff) + countStaff(bassStaff);
-        stepCallback('export', 'done', `${totalNotes} notes, ${maxMeasure + 1} measures`);
+        stepCallback('export', 'done', `${totalNotes} notes, ${measuresArr.length} measures`);
 
         return {
             musicXML, scoreJSON,
-            stats: { notes: totalNotes, measures: maxMeasure + 1, voices: 2 },
+            stats: { notes: totalNotes, measures: measuresArr.length, voices: 2 },
             accuracy: { value: 1.0, metric: 'exact', method: 'midi-parse' },
         };
     }
@@ -1257,26 +1262,73 @@ class ConversionApp {
      * Returns { key: 'G', fifths: 1, useFlats: false } style data.
      */
     _detectKey(notes) {
-        const KEYS = [
-            { key: 'C', fifths: 0 }, { key: 'G', fifths: 1 }, { key: 'D', fifths: 2 },
-            { key: 'A', fifths: 3 }, { key: 'E', fifths: 4 }, { key: 'B', fifths: 5 },
-            { key: 'F#', fifths: 6 }, { key: 'F', fifths: -1 }, { key: 'Bb', fifths: -2 },
-            { key: 'Eb', fifths: -3 }, { key: 'Ab', fifths: -4 }, { key: 'Db', fifths: -5 },
-            { key: 'Gb', fifths: -6 },
-        ];
+        // Krumhansl-Schmuckler key finding (major + minor profiles), correlated
+        // against an OPENING-WEIGHTED pitch-class histogram. The home key is
+        // established at the start, so notes in the first ~30% of the piece are
+        // weighted heavier; this stops a single global key signature from being
+        // dragged onto a "median" key by transient mid-piece modulations (e.g.
+        // Ode-to-Joy's opening G read as Bb/D once the intense flat sections are
+        // counted equally). Near-ties in correlation resolve to the key
+        // signature with the FEWEST accidentals — that is how the passage is
+        // actually engraved, and it keeps the right enharmonic spelling (a sharp
+        // home key spells the raised-4th as F#, so an F#-A third stacks cleanly
+        // instead of a Gb-A cluster).
+        const KKmaj = [6.35, 2.23, 3.48, 2.33, 4.38, 4.09, 2.52, 5.19, 2.39, 3.66, 2.29, 2.88];
+        const KKmin = [6.33, 2.68, 3.52, 5.38, 2.60, 3.53, 2.54, 4.75, 3.98, 2.69, 3.34, 3.17];
+        const MAJ_FIFTHS = { 0: 0, 7: 1, 2: 2, 9: 3, 4: 4, 11: 5, 6: 6, 5: -1, 10: -2, 3: -3, 8: -4, 1: -5 };
+        const FIFTHS_NAME = { 0: 'C', 1: 'G', 2: 'D', 3: 'A', 4: 'E', 5: 'B', 6: 'F#', '-1': 'F', '-2': 'Bb', '-3': 'Eb', '-4': 'Ab', '-5': 'Db', '-6': 'Gb' };
+        const OPEN_WEIGHT = 4, OPEN_FRAC = 0.30, TIE = 0.05;
+
+        const onset = (n) => (n.ticks != null ? n.ticks : (n.time || 0));
+        const maxOnset = notes.reduce((m, n) => Math.max(m, onset(n)), 0) || 1;
         const hist = new Array(12).fill(0);
-        notes.forEach((n) => { hist[n.midi % 12]++; });
-        const MAJOR = [0, 2, 4, 5, 7, 9, 11];
-        let best = KEYS[0], bestScore = -1;
-        KEYS.forEach((k) => {
-            const tonic = ((k.fifths * 7) % 12 + 12) % 12;
-            const score = MAJOR.reduce((acc, deg) => acc + hist[(tonic + deg) % 12], 0);
-            // prefer fewer signature accidentals on ties
-            if (score > bestScore + 1e-9 || (Math.abs(score - bestScore) < 1e-9 && Math.abs(k.fifths) < Math.abs(best.fifths))) {
-                best = k; bestScore = score;
+        notes.forEach((n) => { hist[n.midi % 12] += (onset(n) < OPEN_FRAC * maxOnset ? OPEN_WEIGHT : 1); });
+
+        const mean = hist.reduce((a, b) => a + b, 0) / 12;
+        const corr = (prof) => {
+            const mp = prof.reduce((a, b) => a + b, 0) / 12;
+            let num = 0, dh = 0, dp = 0;
+            for (let i = 0; i < 12; i++) { const a = hist[i] - mean, b = prof[i] - mp; num += a * b; dh += a * a; dp += b * b; }
+            const den = Math.sqrt(dh * dp);
+            return den ? num / den : 0;
+        };
+        const cand = [];
+        for (let t = 0; t < 12; t++) {
+            cand.push({ score: corr(KKmaj.map((_, pc) => KKmaj[(pc - t + 12) % 12])), fifths: MAJ_FIFTHS[t] });
+            cand.push({ score: corr(KKmin.map((_, pc) => KKmin[(pc - t + 12) % 12])), fifths: MAJ_FIFTHS[(t + 3) % 12] });
+        }
+        cand.sort((a, b) => b.score - a.score);
+        const top = cand[0].score;
+        const near = cand.filter((c) => top - c.score <= TIE)
+            .sort((a, b) => (Math.abs(a.fifths) - Math.abs(b.fifths)) || (b.score - a.score));
+        const fifths = near[0].fifths;
+        return { key: FIFTHS_NAME[fifths], fifths, useFlats: fifths < 0 };
+    }
+
+    /** Collapse the largest exact consecutive repeated block into repeat
+     *  barlines. A performance MIDI plays repeats out (bars 5..39 sounded again
+     *  as 40..74); the published score writes one copy with a repeat sign. Find
+     *  the longest L>=MIN where measures[s..s+L-1] equal measures[s+L..s+2L-1],
+     *  tag the first copy repeatStart/repeatEnd and drop the duplicate copy.
+     *  Conservative: a long exact block (>=8 bars) is required, so theme-and-
+     *  variation pieces (each restatement differs) are never falsely folded. */
+    _foldRepeats(measures, MIN = 8) {
+        const keyOf = (m) => JSON.stringify(m.treble || []) + '|' + JSON.stringify(m.bass || []);
+        const keys = measures.map(keyOf);
+        let bestS = -1, bestL = 0;
+        for (let L = Math.floor(measures.length / 2); L >= MIN; L--) {
+            for (let s = 0; s + 2 * L <= measures.length; s++) {
+                let ok = true;
+                for (let k = 0; k < L; k++) { if (keys[s + k] !== keys[s + L + k]) { ok = false; break; } }
+                if (ok) { bestS = s; bestL = L; break; }
             }
-        });
-        return { key: best.key, fifths: best.fifths, useFlats: best.fifths < 0 };
+            if (bestL) break;
+        }
+        if (bestL < MIN) return measures;
+        measures[bestS].repeatStart = true;
+        measures[bestS + bestL - 1].repeatEnd = true;
+        measures.splice(bestS + bestL, bestL);
+        return measures;
     }
 
     /** A full measure of rests for a measure length in quarters (e.g. 1.5 -> [qd]). */
