@@ -763,7 +763,7 @@ class ConversionApp {
 
         stepCallback('quantize', 'running', 'Quantising');
         const tempo = midi.header.tempos[0]?.bpm || 120;
-        const ts = midi.header.timeSignatures[0]?.timeSignature || [4, 4];
+        const ts = this._representativeTimeSignature(midi);
         const beats = ts[0] * (4 / (ts[1] || 4));   // quarters per measure (same contract as playback)
         const ppq = midi.header.ppq;
         // Shared quantization estimate over BOTH hands (performance-timed MIDI
@@ -1371,16 +1371,55 @@ class ConversionApp {
         return spans;
     }
 
+    /** Pick the time signature that is in effect for the MOST ticks, so a short
+     *  pickup/anacrusis bar written in its own meter (e.g. a 1/4 pickup) doesn't
+     *  define the whole piece. The converter assumes a single beats-per-measure,
+     *  so we choose the body meter rather than midi.header.timeSignatures[0]. */
+    _representativeTimeSignature(midi) {
+        const tss = (midi.header && midi.header.timeSignatures) || [];
+        if (!tss.length) return [4, 4];
+        if (tss.length === 1) return tss[0].timeSignature || [4, 4];
+        const endTicks = midi.tracks.reduce((m, t) => t.notes.reduce(
+            (mm, n) => Math.max(mm, (n.ticks || 0) + (n.durationTicks || 0)), m), 0);
+        const sorted = [...tss].sort((a, b) => (a.ticks || 0) - (b.ticks || 0));
+        const weights = new Map();
+        sorted.forEach((t, i) => {
+            const start = t.ticks || 0;
+            const next = i + 1 < sorted.length ? (sorted[i + 1].ticks || start) : Math.max(start, endTicks);
+            const key = (t.timeSignature || [4, 4]).join('/');
+            weights.set(key, (weights.get(key) || 0) + Math.max(next - start, 0));
+        });
+        let best = sorted[0].timeSignature || [4, 4], bestW = -1;
+        for (const t of sorted) {
+            const w = weights.get((t.timeSignature || [4, 4]).join('/')) || 0;
+            if (w > bestW) { bestW = w; best = t.timeSignature; }
+        }
+        return best;
+    }
+
     _separateMIDIVoices(midi) {
         const trebleNotes = [], bassNotes = [];
+        // Select piano-reduction-worthy tracks: drop percussion (GM channel 10 /
+        // percussion kits); for true multi-instrument arrangements prefer the GM
+        // piano family (programs 0-7), else keep the two densest melodic tracks.
+        // Single-program piano files (the corpus, and the audio-lane mock track
+        // with no .instrument) are unaffected -> identical behaviour.
+        const _isPerc = (t) => (t.instrument && t.instrument.percussion === true) || t.channel === 9;
+        const _prog = (t) => (t.instrument && Number.isInteger(t.instrument.number)) ? t.instrument.number : 0;
+        const _withNotes = midi.tracks.filter((t) => t.notes && t.notes.length);
+        const _melodic = _withNotes.filter((t) => !_isPerc(t));
+        const _pianoish = _melodic.filter((t) => _prog(t) <= 7);
+        const _tracks = _pianoish.length ? _pianoish
+            : (_melodic.length ? _melodic.slice().sort((a, b) => b.notes.length - a.notes.length).slice(0, 2)
+            : _withNotes);
         const lh = [], rh = [];
-        midi.tracks.forEach((t, idx) => {
+        _tracks.forEach((t, idx) => {
             const name = (t.name || '').toLowerCase();
             if (name.includes('left') || name.includes('lh')) lh.push(idx);
             if (name.includes('right') || name.includes('rh')) rh.push(idx);
         });
         if (lh.length && rh.length) {
-            midi.tracks.forEach((t, idx) => {
+            _tracks.forEach((t, idx) => {
                 if (lh.includes(idx)) t.notes.forEach((n) => bassNotes.push(n));
                 else if (rh.includes(idx)) t.notes.forEach((n) => trebleNotes.push(n));
             });
@@ -1391,7 +1430,7 @@ class ConversionApp {
         // left-hand chord lands in the melody staff and gets clamped by the
         // next melody note). Cluster whole tracks by mean pitch instead, at
         // the largest gap between sorted track means.
-        const noteTracks = midi.tracks.filter((t) => t.notes.length);
+        const noteTracks = _tracks.filter((t) => t.notes.length);
         if (noteTracks.length >= 2) {
             const means = noteTracks.map((t) => t.notes.reduce((a, n) => a + n.midi, 0) / t.notes.length);
             const order = means.map((m, i) => [m, i]).sort((a, b) => a[0] - b[0]);
@@ -1410,7 +1449,7 @@ class ConversionApp {
             }
         }
         const MIDDLE_C = 60;
-        midi.tracks.forEach((t) => t.notes.forEach((n) => (n.midi >= MIDDLE_C ? trebleNotes : bassNotes).push(n)));
+        _tracks.forEach((t) => t.notes.forEach((n) => (n.midi >= MIDDLE_C ? trebleNotes : bassNotes).push(n)));
         return { trebleNotes, bassNotes };
     }
 
@@ -1762,8 +1801,11 @@ class ConversionApp {
         if (!this.audioContext) {
             this.audioContext = new (window.AudioContext || window.webkitAudioContext)();
         }
-        if (this.audioContext.state === 'suspended') {
-            await this.audioContext.resume();
+        // resume can need more than one attempt right after a tab/OS audio
+        // interruption — retry a few times and verify the context is running.
+        for (let i = 0; i < 5 && this.audioContext.state !== 'running'; i++) {
+            try { await this.audioContext.resume(); } catch (_) { /* retry */ }
+            if (this.audioContext.state !== 'running') await this._delay(40);
         }
         if (this.player && this.pianoPreset) {
             this.player.adjustPreset(this.audioContext, this.pianoPreset);
@@ -1910,6 +1952,11 @@ class ConversionApp {
         this._updatePlayButtons();
 
         const ctx = this.audioContext;
+        // Re-arm the engine on every Play: drop spent/pinned envelopes so a
+        // second Play doesn't reuse a silenced gain node, and read the clock
+        // AFTER the context is confirmed running so startAt is never in the past.
+        try { if (this.player && this.player.cancelQueue) this.player.cancelQueue(ctx); } catch (_) { /* ignore */ }
+        if (this.player) this.player.envelopes = [];
         const startAt = ctx.currentTime + 0.12;
         const t0 = events[0].t;          // skip leading silence — sound starts immediately
         events.forEach((ev) => {
@@ -1974,6 +2021,7 @@ class ConversionApp {
         try {
             if (this.player && typeof this.player.cancelQueue === 'function' && this.audioContext) {
                 this.player.cancelQueue(this.audioContext);
+                this.player.envelopes = [];   // free the gain nodes so the next Play rebuilds clean
             }
         } catch (_) { /* ignore */ }
         if (this.osmd && this.osmd.cursor) {
