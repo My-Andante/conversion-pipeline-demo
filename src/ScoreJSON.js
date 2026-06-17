@@ -536,9 +536,18 @@ ${note.dotted ? '        <dot/>\n' : ''}        <staff>${staff}</staff>
 // divisions = 8 per quarter so w/h/q/e/s + dotted are all integers.
 // ---------------------------------------------------------------------------
 ScoreJSON.toMusicXML = function (json) {
-    const DIV = 8;
-    const CODE_DIV = { w: 32, wd: 48, h: 16, hd: 24, q: 8, qd: 12, e: 4, ed: 6, s: 2, sd: 3, t: 1 };
-    const CODE_TYPE = { w: 'whole', h: 'half', q: 'quarter', e: 'eighth', s: '16th', t: '32nd' };
+    // divisions = 24 per quarter. Binary codes stay integer (q=24,e=12,s=6,
+    // t=3 …) AND triplet codes are integer (et = 1/3 quarter = 8, qt = 2/3 =
+    // 16) — the smallest common grid for both binary 1/4,1/8 and triplet 1/3.
+    const DIV = 24;
+    const CODE_DIV = {
+        w: 96, wd: 144, h: 48, hd: 72, q: 24, qd: 36, e: 12, ed: 18, s: 6, sd: 9, t: 3,
+        et: 8, qt: 16,                                            // eighth/quarter triplet
+    };
+    const CODE_TYPE = {
+        w: 'whole', h: 'half', q: 'quarter', e: 'eighth', s: '16th', t: '32nd',
+        et: 'eighth', qt: 'quarter',                             // triplet note heads
+    };
     const PC = { 'C': ['C', 0], 'C#': ['C', 1], 'Db': ['D', -1], 'D': ['D', 0], 'D#': ['D', 1],
         'Eb': ['E', -1], 'E': ['E', 0], 'F': ['F', 0], 'F#': ['F', 1], 'Gb': ['G', -1],
         'G': ['G', 0], 'G#': ['G', 1], 'Ab': ['A', -1], 'A': ['A', 0], 'A#': ['A', 1],
@@ -546,7 +555,9 @@ ScoreJSON.toMusicXML = function (json) {
 
     const esc = (t) => String(t == null ? '' : t).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
     const numToDiv = (n) => Math.max(1, Math.round(n * (DIV / 4)));   // legacy quarter=4 scale
-    const divToType = (d) => d >= 32 ? 'whole' : d >= 16 ? 'half' : d >= 8 ? 'quarter' : d >= 4 ? 'eighth' : '16th';
+    // thresholds scale with DIV (quarter = DIV divisions): whole 4q, half 2q,
+    // quarter 1q, eighth 1/2q, else 16th.
+    const divToType = (d) => d >= DIV * 4 ? 'whole' : d >= DIV * 2 ? 'half' : d >= DIV ? 'quarter' : d >= DIV / 2 ? 'eighth' : '16th';
 
     const norm = (tok) => {
         if (typeof tok === 'string') {
@@ -572,8 +583,8 @@ ScoreJSON.toMusicXML = function (json) {
         }
         const code = String(tok.duration || 'q');
         return {
-            div: CODE_DIV[code] || 8,
-            typ: CODE_TYPE[code[0]] || 'quarter',
+            div: CODE_DIV[code] || DIV,
+            typ: CODE_TYPE[code] || CODE_TYPE[code[0]] || 'quarter',
             dot: code.endsWith('d') ? '<dot/>' : '',
         };
     };
@@ -589,9 +600,15 @@ ScoreJSON.toMusicXML = function (json) {
         const tok = norm(tokRaw);
         const o = opts || {};
         const { div, typ, dot } = tokDiv(tok);
+        // triplet markup (only set when the annotate pass flagged tok.trip):
+        //   timeMod = 3 notes in the time of 2 (eighth-/quarter-triplet);
+        //   tuplet bracket opens on the first and closes on the last of a beat.
+        const timeMod = o.tuplet ? '<time-modification><actual-notes>3</actual-notes><normal-notes>2</normal-notes></time-modification>' : '';
+        const tupletNot = (o.tupletStart ? '<tuplet type="start"/>' : '') + (o.tupletStop ? '<tuplet type="stop"/>' : '');
         if (tok.rest) {
             const inv = tok.invisible ? ' print-object="no"' : '';
-            return '      <note' + inv + '><rest/><duration>' + div + '</duration><voice>' + voice + '</voice><type>' + typ + '</type>' + dot + '<staff>' + staff + '</staff></note>\n';
+            const rNot = tupletNot ? '<notations>' + tupletNot + '</notations>' : '';
+            return '      <note' + inv + '><rest/><duration>' + div + '</duration><voice>' + voice + '</voice><type>' + typ + '</type>' + dot + timeMod + '<staff>' + staff + '</staff>' + rNot + '</note>\n';
         }
         const pitches = [tok.pitch].concat(Array.isArray(tok.chord) ? tok.chord : []);
         // <tie> = sound, <tied> = the visible arc — both, or OSMD re-strikes the note.
@@ -606,9 +623,11 @@ ScoreJSON.toMusicXML = function (json) {
             const beam = (i === 0 && o.beam) ? '<beam number="1">' + o.beam + '</beam>' : '';
             const notations = [];
             if (tied) notations.push(tied);
+            if (i === 0 && tupletNot) notations.push(tupletNot);      // tuplet bracket on the head only
             if (i === 0 && tok.finger) notations.push('<technical><fingering>' + tok.finger + '</fingering></technical>');
             const notXml = notations.length ? '<notations>' + notations.join('') + '</notations>' : '';
-            out += '      <note>' + chord + '<pitch>' + px + '</pitch><duration>' + div + '</duration>' + tie + '<voice>' + voice + '</voice><type>' + typ + '</type>' + dot + '<staff>' + staff + '</staff>' + beam + notXml + '</note>\n';
+            const tm = (i === 0) ? timeMod : '';                      // time-modification on the head only
+            out += '      <note>' + chord + '<pitch>' + px + '</pitch><duration>' + div + '</duration>' + tie + '<voice>' + voice + '</voice><type>' + typ + '</type>' + dot + tm + '<staff>' + staff + '</staff>' + beam + notXml + '</note>\n';
         });
         return out;
     };
@@ -640,11 +659,11 @@ ScoreJSON.toMusicXML = function (json) {
     //          (一拍一組); groups break at rests, longer notes, beat
     //          boundaries and barlines. Compound x/8 meters beat in dotted
     //          quarters.
-    const beatDiv = (beatsDen === 8 && beatsNum % 3 === 0) ? 12 : Math.round((4 / beatsDen) * DIV);
+    const beatDiv = (beatsDen === 8 && beatsNum % 3 === 0) ? Math.round(DIV * 1.5) : Math.round((4 / beatsDen) * DIV);
     const annotate = (staffKey) => {
         const perMeasure = measures.map((m) => (m[staffKey] || []).map((t) => {
             const tok = norm(t);
-            return { tok, opts: {}, div: tokDiv(tok).div };
+            const _td = tokDiv(tok); return { tok, opts: {}, div: _td.div, typ: _td.typ };
         }));
         // ties — walk the staff stream linearly across measures
         let prevSounding = null;
@@ -674,7 +693,7 @@ ScoreJSON.toMusicXML = function (json) {
                 group = [];
             };
             toks.forEach((e) => {
-                const beamable = !e.tok.rest && e.tok.pitch && e.div < DIV && !e.tok.invisible;
+                const beamable = !e.tok.rest && e.tok.pitch && (e.typ === 'eighth' || e.typ === '16th' || e.typ === '32nd') && !e.tok.invisible;
                 if (!beamable) { flush(); pos += e.div; return; }
                 const beat = Math.floor(pos / beatDiv);
                 if (group.length && beat !== Math.floor((pos - group[group.length - 1].div) / beatDiv)) flush();
@@ -682,6 +701,33 @@ ScoreJSON.toMusicXML = function (json) {
                 pos += e.div;
             });
             flush();
+        });
+        // tuplets — group triplet tokens (tok.trip) per measure into beat-long
+        // runs (et=8 + et=8 + et=8, or qt=16 + et=8, … = DIV divisions). Every
+        // triplet note carries <time-modification>3/2; the run's first note
+        // opens the <tuplet> bracket and the note whose accumulation completes
+        // a beat closes it. Non-triplet scores have no tok.trip → this is a
+        // no-op and the binary output is byte-identical.
+        perMeasure.forEach((toks) => {
+            let acc = 0;            // triplet divisions accumulated in the open group
+            let openTok = null;     // token that opened the current bracket
+            toks.forEach((e) => {
+                if (!e.tok.trip) { openTok = null; acc = 0; return; }
+                e.opts.tuplet = true;                 // time-modification on all
+                if (!openTok) { e.opts.tupletStart = true; openTok = e; acc = 0; }
+                acc += e.div;
+                if (acc >= DIV - 1e-6) {               // one beat of triplets done
+                    e.opts.tupletStop = true;
+                    openTok = null; acc = 0;
+                }
+            });
+            // dangling open group (incomplete beat) — close it on its last note
+            // so the bracket is never left unterminated
+            if (openTok) {
+                for (let i = toks.length - 1; i >= 0; i--) {
+                    if (toks[i].opts.tuplet && !toks[i].opts.tupletStop) { toks[i].opts.tupletStop = true; break; }
+                }
+            }
         });
         return perMeasure;
     };

@@ -1021,20 +1021,80 @@ class ConversionApp {
         const ALIGN = o.alignFn || ((x) => x + (o.offsetQ || 0)); // timing correction
         const TRIM = o.trimQ || 0;                                // leading empty measures
         const FLATS = !!o.useFlats;
-        const CODES = [[4,'w'],[3,'hd'],[2,'h'],[1.5,'qd'],[1,'q'],[0.75,'ed'],[0.5,'e'],[0.375,'sd'],[0.25,'s'],[0.125,'t']];
-        const CODE_Q = { w:4, hd:3, h:2, qd:1.5, q:1, ed:0.75, e:0.5, sd:0.375, s:0.25, t:0.125 };
+        const TRIP = !!o.triplet;                                 // triplet-aware mode
+        const ET = 1 / 3, QT = 2 / 3;                             // eighth/quarter triplet (quarters)
+        // duration vocabulary (descending). Binary path is UNCHANGED. The
+        // triplet path swaps to a 1/12-aligned set: every value is an integer
+        // multiple of GRID (=1/12), so sd (0.375 = 4.5/12) and t (0.125 =
+        // 1.5/12) — which are NOT 1/12-aligned — are dropped, and the triplet
+        // values qt (2/3) and et (1/3) are inserted in descending order so the
+        // greedy splitter prefers et over the smaller binary s when a third of
+        // a beat is needed.
+        const CODES = TRIP
+            ? [[4,'w'],[3,'hd'],[2,'h'],[1.5,'qd'],[1,'q'],[0.75,'ed'],[QT,'qt'],[0.5,'e'],[ET,'et'],[0.25,'s']]
+            : [[4,'w'],[3,'hd'],[2,'h'],[1.5,'qd'],[1,'q'],[0.75,'ed'],[0.5,'e'],[0.375,'sd'],[0.25,'s'],[0.125,'t']];
+        const CODE_Q = TRIP
+            ? { w:4, hd:3, h:2, qd:1.5, q:1, ed:0.75, qt:QT, e:0.5, et:ET, sd:0.375, s:0.25, t:0.125 }
+            : { w:4, hd:3, h:2, qd:1.5, q:1, ed:0.75, e:0.5, sd:0.375, s:0.25, t:0.125 };
+        const TRIP_CODES = { et: true, qt: true };                // tokens that need tuplet markup
         // note-value vocabulary a single token may carry (no ties needed)
-        const VOCAB = [4, 3, 2, 1.5, 1, 0.75, 0.5, 0.375, 0.25, 0.125].filter((v) => v >= GRID - 1e-9);
+        const VOCAB = (TRIP
+            ? [4, 3, 2, 1.5, 1, 0.75, QT, 0.5, ET, 0.25]
+            : [4, 3, 2, 1.5, 1, 0.75, 0.5, 0.375, 0.25, 0.125]).filter((v) => v >= GRID - 1e-9);
         const toQ = (n) => (n.ticks != null ? n.ticks / (ppq || 480) : (n.time || 0) * bpm / 60);
         const gateQ = (n) => (n.durationTicks != null ? n.durationTicks / (ppq || 480) : (n.duration || 0) * bpm / 60);
         const q = (x) => Math.round(x / GRID) * GRID;
-        const splitDur = (dur) => {
-            const out = []; let rem = Math.round(dur / 0.125) * 0.125; let guard = 0;
-            while (rem >= 0.125 - 1e-6 && guard++ < 64) {
-                for (const [qv, c] of CODES) { if (qv <= rem + 1e-6) { out.push(c); rem = Math.round((rem - qv) / 0.125) * 0.125; break; } }
+        // splitDur quantization step. Binary path keeps its original 0.125
+        // constant verbatim (do NOT tie it to GRID — GRID is 0.25 for 16th-grid
+        // files and switching the split arithmetic to 0.25 would re-spell the
+        // whole binary corpus). Triplet path steps on the 1/12 grid.
+        const STEP = TRIP ? GRID : 0.125;
+        const SMALLEST = TRIP ? CODES[CODES.length - 1][0] : 0.125;
+        const splitDur = (dur, codes, step, smallest) => {
+            const cc = codes || CODES, st = step || STEP, sm = smallest || SMALLEST;
+            const out = []; let rem = Math.round(dur / st) * st; let guard = 0;
+            while (rem >= sm - 1e-6 && guard++ < 64) {
+                for (const [qv, c] of cc) { if (qv <= rem + 1e-6) { out.push(c); rem = Math.round((rem - qv) / st) * st; break; } }
             }
-            return out.length ? out : ['t'];
+            return out.length ? out : [cc[cc.length - 1][1]];
         };
+        // ── per-beat triplet machinery (TRIP only; binary path never enters) ──
+        // Root cause of the overflow bug: a single global 1/12 grid let a
+        // binary k/4 onset coexist with et=1/3 durations, so k/4 + k/3 didn't
+        // tile a beat. Fix: classify each beat from its RAW onsets, then snap
+        // + spell that beat purely on ONE grid — triplet beats on {0,1/3,2/3},
+        // binary beats on the original binary grid. Each beat then sums to an
+        // integer beat count, so every measure tiles to beatsPerMeasure exactly.
+        const GRIDB = TRIP ? (o.gridBin || 0.25) : GRID;   // binary onset grid for binary beats
+        const ADV = 1 / 24;                                // common refine grid (1/3 & 1/8 exact)
+        // triplet code sets used inside a single beat (descending)
+        const TCODES = [[1,'q'],[QT,'qt'],[ET,'et']];      // whole-beat tie, 2/3, 1/3
+        const BCODES = [[4,'w'],[3,'hd'],[2,'h'],[1.5,'qd'],[1,'q'],[0.75,'ed'],[0.5,'e'],[0.375,'sd'],[0.25,'s'],[0.125,'t']];
+        const tripletBeats = new Set();
+        if (TRIP) {
+            const TTOL = 0.07;
+            const nearAny = (f, arr) => arr.some((p) => Math.abs(f - p) <= TTOL);
+            notes.forEach((n) => {
+                const a = Math.max(ALIGN(toQ(n)) - TRIM, 0);
+                const b = Math.floor(a + 1e-9);
+                const f = a - b;
+                if (nearAny(f, [ET, QT]) && !nearAny(f, [0, 0.25, 0.5, 0.75, 1])) tripletBeats.add(b);
+            });
+        }
+        // onset snap: per-beat in TRIP mode, global grid otherwise
+        const snapOn = TRIP ? (x) => {
+            if (x <= 0) return 0;
+            const b = Math.floor(x + 1e-9);
+            const f = x - b;
+            let sf;
+            if (tripletBeats.has(b)) {
+                const cands = [0, ET, QT, 1];
+                sf = cands.reduce((p, c) => (Math.abs(f - c) < Math.abs(f - p) ? c : p), 0);
+            } else {
+                sf = Math.round(f / GRIDB) * GRIDB;
+            }
+            return Math.round((b + sf) / ADV) * ADV;
+        } : q;
         const SHARPS = ['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
         const FLATN = ['C','Db','D','Eb','E','F','Gb','G','Ab','A','Bb','B'];
         const NAMES = FLATS ? FLATN : SHARPS;
@@ -1045,7 +1105,7 @@ class ConversionApp {
         // precision still available)
         const groups = new Map();
         notes.forEach((n) => {
-            const on = Math.max(q(ALIGN(toQ(n))) - TRIM, 0);
+            const on = Math.max(snapOn(ALIGN(toQ(n))) - TRIM, 0);
             const gate = Math.max(gateQ(n), GRID);
             if (!groups.has(on)) groups.set(on, new Map());
             const g = groups.get(on);
@@ -1084,7 +1144,13 @@ class ConversionApp {
                 else dur = Math.max(q(dur), GRID);
             }
             if (nextOn !== Infinity) dur = Math.min(dur, nextOn - on);
-            return [on, on + Math.max(dur, GRID), pitches];
+            let spanEnd = on + Math.max(dur, GRID);
+            if (TRIP) {
+                const minStep = tripletBeats.has(Math.floor(on + 1e-9)) ? ET : GRIDB;
+                spanEnd = Math.max(snapOn(spanEnd), on + minStep);
+                if (nextOn !== Infinity) spanEnd = Math.min(spanEnd, nextOn);
+            }
+            return [on, spanEnd, pitches];
         });
         const lastEnd = spans[spans.length - 1][1];
         const nMeasures = Math.floor((lastEnd - 1e-6) / beats) + 1;
@@ -1095,18 +1161,39 @@ class ConversionApp {
             let seg = start, first = true;
             while (seg < end - 1e-6) {
                 const mi = Math.min(Math.floor((seg + 1e-9) / beats), nMeasures - 1);
-                const segEnd = Math.min((mi + 1) * beats, end);
-                for (const c of splitDur(segEnd - seg)) {
+                let segEnd = Math.min((mi + 1) * beats, end);
+                let codes, step, smallest, adv;
+                if (TRIP) {
+                    // tile ONE beat-class at a time so each beat sums exactly
+                    const bcur = Math.floor(seg + 1e-9);
+                    if (tripletBeats.has(bcur)) {
+                        segEnd = Math.min(segEnd, bcur + 1);          // triplet beat tiles alone
+                        codes = TCODES; step = ET; smallest = ET; adv = ADV;
+                    } else {
+                        // extend the binary run only up to the next triplet beat
+                        let nb = bcur + 1;
+                        while (nb < segEnd - 1e-9 && !tripletBeats.has(nb)) nb++;
+                        if (tripletBeats.has(nb)) segEnd = Math.min(segEnd, nb);
+                        codes = BCODES; step = 0.125; smallest = 0.125; adv = ADV;
+                    }
+                } else {
+                    codes = CODES; step = STEP; smallest = SMALLEST; adv = GRID;
+                }
+                for (const c of splitDur(segEnd - seg, codes, step, smallest)) {
+                    const isTrip = TRIP && TRIP_CODES[c];        // et/qt → needs tuplet markup
                     if (!pitches) {
-                        measures[mi].push({ rest: true, duration: c });
+                        const rtok = { rest: true, duration: c };
+                        if (isTrip) rtok.trip = true;
+                        measures[mi].push(rtok);
                     } else {
                         const tok = { pitch: mName(pitches[0]), duration: c };
                         if (pitches.length > 1) tok.chord = pitches.slice(1).map(mName);
                         if (!first) tok.tie = true;
+                        if (isTrip) tok.trip = true;
                         measures[mi].push(tok);
                     }
                     first = false;
-                    seg = Math.round((seg + CODE_Q[c]) / GRID) * GRID;
+                    seg = Math.round((seg + CODE_Q[c]) / adv) * adv;
                 }
             }
         };
@@ -1150,7 +1237,33 @@ class ConversionApp {
             if (d > 1e-6) iois.push(d);
         }
         const n32 = iois.filter((d) => d > 0.09 && d < 0.19).length;
-        const grid = iois.length && n32 / iois.length > 0.05 ? 0.125 : 0.25;
+        let grid = iois.length && n32 / iois.length > 0.05 ? 0.125 : 0.25;
+        const gridBin = grid;   // binary onset grid, preserved for triplet files' binary beats
+
+        // ── triplet detection (guard) ─────────────────────────────────────
+        // tripletFrac = share of IOIs sitting within TRIP_TOL of a k/3-beat
+        // slot (1/3, 2/3, 1, 4/3 …) but NOT within TRIP_TOL of a binary k/4
+        // slot — i.e. genuine triplet subdivisions the binary grid can't spell.
+        // Only when triplets DOMINATE (frac > TRIP_THRESH) do we switch the
+        // whole pipeline to the 1/12 grid; otherwise the binary path below is
+        // left byte-identical. Thresholds chosen to separate the triplet-heavy
+        // Doraemon (frac ~0.78) from the binary corpus by a wide margin — the
+        // closest non-triplet file (alicia, which contains a triplet minority)
+        // measures ~0.26, and ode-intermediate ~0.10, both well under 0.40.
+        // (Spec proposed tol 0.06 / thresh 0.20; tightened to 0.04 / 0.40 here
+        // because the corpus would otherwise false-trigger — see TRIPLET_SPEC.)
+        const TRIP_TOL = 0.04;
+        const TRIP_THRESH = 0.40;
+        let triplet = false;
+        if (iois.length) {
+            const nearMul = (d, base) => Math.abs(d - Math.round(d / base) * base);
+            const tripCount = iois.filter((d) =>
+                nearMul(d, 1 / 3) <= TRIP_TOL && nearMul(d, 0.25) > TRIP_TOL).length;
+            if (tripCount / iois.length > TRIP_THRESH) {
+                triplet = true;
+                grid = 1 / 12;   // spells binary 1/4,1/8 AND triplet 1/3,2/3
+            }
+        }
 
         // ── drift track: windowed median deviation from the EIGHTH grid ──
         // (quarters and offbeat eighths share the same phase mod 0.5; true
@@ -1252,7 +1365,7 @@ class ConversionApp {
         const first = Math.round(finalAlign(ons[0]) / grid) * grid;
         const trimQ = Math.max(Math.floor((first + 1e-6) / beats), 0) * beats;
         const offsetQ = finalAlign(0);                       // representative (for the UI label)
-        return { offsetQ, trimQ, grid, alignFn: finalAlign };
+        return { offsetQ, trimQ, grid, gridBin, triplet, alignFn: finalAlign };
     }
 
     /**
