@@ -1,5 +1,385 @@
-@import url('https://fonts.googleapis.com/css2?family=Noto+Sans:ital,wght@0,400;0,500;0,700;1,400&display=swap');
-
+/* Noto Sans, self-hosted.
+ *
+ * This file previously opened with:
+ *   @import url('https://fonts.googleapis.com/css2?family=Noto+Sans:...')
+ *
+ * That made every surface using this stylesheet depend on fonts.googleapis.com
+ * at runtime. Offline, or on a locked-down venue network, --font-family fell
+ * back to system sans and every pixel-verified layout shifted. Because this
+ * file is copied verbatim into each demo, the dependency propagated with it.
+ *
+ * Latin: the latin and latin-ext subsets — 8 files, ~666 KB.
+ *
+ * CJK: Noto Sans TC, self-hosted as of 2026-08-03, declared under the SAME
+ * family name so `--font-family: 'Noto Sans'` picks it up with no change to
+ * any type style. M21 CONFIRMED Noto Sans CJK as acceptable for Chinese and
+ * recorded that best rendering may need the downloaded font rather than the
+ * web-served one (Meetings/Meeting 21/20260603 - 21st Meeting Minutes.md:65,
+ * :76).
+ *
+ * Sizing was measured, not guessed (all figures woff2 over the wire):
+ *   full Noto Sans TC, Google's 105 chunks x 3 weights ... 12.00 MB
+ *   only the Google chunks our text touches, 3 weights ..  3.55 MB
+ *   Big5 Level-1 (常用字), 3 static weights .............  2.57 MB
+ *   what ships below: hot chunks, one per weight ........  21.9 KB each
+ *                     27 cold chunks, fetched on demand .  2.67 MB
+ * Google's own chunking is too coarse for us: the whole Chinese vocabulary of
+ * this UI is 125 distinct characters, yet it scatters across 22 of Google's
+ * ~40 KB chunks, so their split costs 1.18 MB for ONE weight where a
+ * purpose-built subset costs 21.9 KB.
+ *
+ * How it is cut:
+ *   - `noto-sans-tc-hot-<w>.woff2` holds exactly the characters this repo's UI
+ *     uses today and is declared LAST, so it wins for those codepoints.
+ *   - `noto-sans-tc-cjk-<span>-<w>.woff2` cover the rest of Big5 Level-1
+ *     (5,401 常用字) bucketed into contiguous unicode spans. A browser fetches
+ *     one only if a character in its span is actually on the page, and only at
+ *     the weight it is rendered in. Worst single lazy fetch: 175.5 KB.
+ * Consequence: when new Chinese copy is added the hot chunk goes stale, but it
+ * degrades to one lazy cold fetch of the RIGHT glyphs — never to a wrong or
+ * missing typeface. Regenerate with fonts/build-cjk-subset.py.
+ *
+ * ⚠️ The CJK faces MUST be declared at the same discrete weights as the Latin
+ * faces (400/500/700), never as a `font-weight: 100 900` variable range. One
+ * variable file per span would be ~40% smaller (66.5 KB -> 40.8 KB hot,
+ * 2.67 MB -> 1.67 MB cold) but Chromium narrows a family's candidate faces by
+ * weight BEFORE applying unicode-range, so a range face loses to the
+ * fixed-weight Latin faces even for codepoints the Latin faces do not cover.
+ * The chunk is parsed, appears in document.fonts, is never fetched, and the
+ * Chinese silently renders in the system font. Verified on Chromium 1234.
+ *
+ * Characters outside Big5 Level-1 (rare/HKSCS/Cantonese-only forms) still fall
+ * back to the system CJK font. Extending to Big5 Level-2 was measured at
+ * 5.83 MB (3 static weights) and is NOT shipped — raise it as a decision if
+ * such copy appears.
+ *
+ * Noto Sans TC is a TRADITIONAL face and has no glyph for some Simplified-only
+ * characters (简 U+7B80, for one). Those render in the system font, as they did
+ * before this file existed. The cold spans are contiguous, so such a character
+ * inside a claimed span costs one lazy fetch that cannot satisfy it — this is
+ * why screens/settings-language.html pulls cjk-e-400 for its "简体中文" label.
+ * The alternative, exact per-chunk unicode-range lists, costs ~40 KB of CSS on
+ * every page to save an occasional 127 KB font fetch, so it is not taken.
+ * Simplified Chinese as a supported UI language needs Noto Sans SC — a separate
+ * family and a separate decision, not covered here.
+ *
+ * U+2000-206F (general punctuation) is deliberately left to the Latin faces;
+ * the CJK faces must never claim it or en/em dashes and quotes change shape.
+ *
+ * Licence: SIL Open Font License 1.1 for both families — redistribution
+ * permitted. See fonts/LICENSE.txt.
+ */
+@font-face {
+  font-family: 'Noto Sans';
+  font-style: italic;
+  font-weight: 400;
+  font-display: swap;
+  src: url('fonts/noto-sans-latin-ext-400-italic.woff2') format('woff2');
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+@font-face {
+  font-family: 'Noto Sans';
+  font-style: italic;
+  font-weight: 400;
+  font-display: swap;
+  src: url('fonts/noto-sans-latin-400-italic.woff2') format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: 'Noto Sans';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('fonts/noto-sans-latin-ext-400.woff2') format('woff2');
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+@font-face {
+  font-family: 'Noto Sans';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('fonts/noto-sans-latin-400.woff2') format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: 'Noto Sans';
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url('fonts/noto-sans-latin-ext-500.woff2') format('woff2');
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+@font-face {
+  font-family: 'Noto Sans';
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url('fonts/noto-sans-latin-500.woff2') format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: 'Noto Sans';
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url('fonts/noto-sans-latin-ext-700.woff2') format('woff2');
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+@font-face {
+  font-family: 'Noto Sans';
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url('fonts/noto-sans-latin-700.woff2') format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+/* --- Noto Sans TC (CJK), same family name and the same discrete weights as
+ * the Latin faces above, so every type style and every hardcoded
+ * `font-family: 'Noto Sans'` inherits it unchanged. The `hot` faces are the
+ * exact character set this repo's UI ships today and are declared LAST so
+ * they win the unicode-range match; the `cjk-*` faces cover the rest of Big5
+ * Level-1 and are fetched only when a character in their span is rendered.
+ * Do NOT collapse these into one variable file — see the file header. */
+@font-face {
+  font-family: 'Noto Sans';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('fonts/noto-sans-tc-cjk-a-400.woff2') format('woff2');
+  unicode-range: U+4E00-5CFF;
+}
+@font-face {
+  font-family: 'Noto Sans';
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url('fonts/noto-sans-tc-cjk-a-500.woff2') format('woff2');
+  unicode-range: U+4E00-5CFF;
+}
+@font-face {
+  font-family: 'Noto Sans';
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url('fonts/noto-sans-tc-cjk-a-700.woff2') format('woff2');
+  unicode-range: U+4E00-5CFF;
+}
+@font-face {
+  font-family: 'Noto Sans';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('fonts/noto-sans-tc-cjk-b-400.woff2') format('woff2');
+  unicode-range: U+5D00-66FF;
+}
+@font-face {
+  font-family: 'Noto Sans';
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url('fonts/noto-sans-tc-cjk-b-500.woff2') format('woff2');
+  unicode-range: U+5D00-66FF;
+}
+@font-face {
+  font-family: 'Noto Sans';
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url('fonts/noto-sans-tc-cjk-b-700.woff2') format('woff2');
+  unicode-range: U+5D00-66FF;
+}
+@font-face {
+  font-family: 'Noto Sans';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('fonts/noto-sans-tc-cjk-c-400.woff2') format('woff2');
+  unicode-range: U+6700-6FFF;
+}
+@font-face {
+  font-family: 'Noto Sans';
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url('fonts/noto-sans-tc-cjk-c-500.woff2') format('woff2');
+  unicode-range: U+6700-6FFF;
+}
+@font-face {
+  font-family: 'Noto Sans';
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url('fonts/noto-sans-tc-cjk-c-700.woff2') format('woff2');
+  unicode-range: U+6700-6FFF;
+}
+@font-face {
+  font-family: 'Noto Sans';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('fonts/noto-sans-tc-cjk-d-400.woff2') format('woff2');
+  unicode-range: U+7000-77FF;
+}
+@font-face {
+  font-family: 'Noto Sans';
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url('fonts/noto-sans-tc-cjk-d-500.woff2') format('woff2');
+  unicode-range: U+7000-77FF;
+}
+@font-face {
+  font-family: 'Noto Sans';
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url('fonts/noto-sans-tc-cjk-d-700.woff2') format('woff2');
+  unicode-range: U+7000-77FF;
+}
+@font-face {
+  font-family: 'Noto Sans';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('fonts/noto-sans-tc-cjk-e-400.woff2') format('woff2');
+  unicode-range: U+7800-82FF;
+}
+@font-face {
+  font-family: 'Noto Sans';
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url('fonts/noto-sans-tc-cjk-e-500.woff2') format('woff2');
+  unicode-range: U+7800-82FF;
+}
+@font-face {
+  font-family: 'Noto Sans';
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url('fonts/noto-sans-tc-cjk-e-700.woff2') format('woff2');
+  unicode-range: U+7800-82FF;
+}
+@font-face {
+  font-family: 'Noto Sans';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('fonts/noto-sans-tc-cjk-f-400.woff2') format('woff2');
+  unicode-range: U+8300-8CFF;
+}
+@font-face {
+  font-family: 'Noto Sans';
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url('fonts/noto-sans-tc-cjk-f-500.woff2') format('woff2');
+  unicode-range: U+8300-8CFF;
+}
+@font-face {
+  font-family: 'Noto Sans';
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url('fonts/noto-sans-tc-cjk-f-700.woff2') format('woff2');
+  unicode-range: U+8300-8CFF;
+}
+@font-face {
+  font-family: 'Noto Sans';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('fonts/noto-sans-tc-cjk-g-400.woff2') format('woff2');
+  unicode-range: U+8D00-9FFF;
+}
+@font-face {
+  font-family: 'Noto Sans';
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url('fonts/noto-sans-tc-cjk-g-500.woff2') format('woff2');
+  unicode-range: U+8D00-9FFF;
+}
+@font-face {
+  font-family: 'Noto Sans';
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url('fonts/noto-sans-tc-cjk-g-700.woff2') format('woff2');
+  unicode-range: U+8D00-9FFF;
+}
+@font-face {
+  font-family: 'Noto Sans';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('fonts/noto-sans-tc-cjk-x-400.woff2') format('woff2');
+  unicode-range: U+2E80-4DBF;
+}
+@font-face {
+  font-family: 'Noto Sans';
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url('fonts/noto-sans-tc-cjk-x-500.woff2') format('woff2');
+  unicode-range: U+2E80-4DBF;
+}
+@font-face {
+  font-family: 'Noto Sans';
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url('fonts/noto-sans-tc-cjk-x-700.woff2') format('woff2');
+  unicode-range: U+2E80-4DBF;
+}
+@font-face {
+  font-family: 'Noto Sans';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('fonts/noto-sans-tc-cjk-y-400.woff2') format('woff2');
+  unicode-range: U+F900-FFEF;
+}
+@font-face {
+  font-family: 'Noto Sans';
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url('fonts/noto-sans-tc-cjk-y-500.woff2') format('woff2');
+  unicode-range: U+F900-FFEF;
+}
+@font-face {
+  font-family: 'Noto Sans';
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url('fonts/noto-sans-tc-cjk-y-700.woff2') format('woff2');
+  unicode-range: U+F900-FFEF;
+}
+@font-face {
+  font-family: 'Noto Sans';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('fonts/noto-sans-tc-hot-400.woff2') format('woff2');
+  unicode-range: U+3000, U+3002, U+4E00, U+4E0A, U+4E0D, U+4E2D, U+4EE3, U+4F53, U+4F60, U+500B, U+5132, U+5149, U+5165, U+51AC, U+5206, U+5230, U+53BB, U+53D6, U+5411, U+548C, U+54C1, U+55AE, U+56DE, U+570D, U+5728, U+5929, U+5931, U+594F, U+5B50, U+5B58, U+5B8C, U+5C01, U+5C07, U+5C1A, U+5C31, U+5DEE, U+5DF2, U+5DFE, U+5E03, U+5E3D, U+5E63, U+5F69, U+5F97, U+6210, U+627E, U+63DB, U+64C1, U+64EC, U+6557, U+6563, U+6587, U+65B0, U+6709, U+672A, U+6797, U+67D4, U+68D2, U+68EE, U+6A02, U+6A5F, U+6A6B, U+6B16, U+6B20, U+6B64, U+6E05, U+70BA, U+71C8, U+7269, U+73A9, U+7403, U+7434, U+751F, U+767C, U+7684, U+76D2, U+793A, U+7BC0, U+7BC4, U+7C21, U+7C89, U+7D00, U+7D05, U+7D2B, U+7DA0, U+7DDA, U+7DF4, U+7E41, U+7F6E, U+7FD2, U+800D, U+80FD, U+8106, U+8272, U+8393, U+865B, U+8679, U+88DD, U+8A2D, U+8ACB, U+8B93, U+8CB7, U+8CFA, U+8CFC, U+8DB3, U+8F49, U+8FD4, U+9032, U+9084, U+914D, U+91D1, U+9304, U+9375, U+9713, U+9762, U+97F3, U+9802, U+9810, U+984D, U+98DB, U+9918, U+9AD4, U+FF01, U+FF0C, U+FF1A;
+}
+@font-face {
+  font-family: 'Noto Sans';
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url('fonts/noto-sans-tc-hot-500.woff2') format('woff2');
+  unicode-range: U+3000, U+3002, U+4E00, U+4E0A, U+4E0D, U+4E2D, U+4EE3, U+4F53, U+4F60, U+500B, U+5132, U+5149, U+5165, U+51AC, U+5206, U+5230, U+53BB, U+53D6, U+5411, U+548C, U+54C1, U+55AE, U+56DE, U+570D, U+5728, U+5929, U+5931, U+594F, U+5B50, U+5B58, U+5B8C, U+5C01, U+5C07, U+5C1A, U+5C31, U+5DEE, U+5DF2, U+5DFE, U+5E03, U+5E3D, U+5E63, U+5F69, U+5F97, U+6210, U+627E, U+63DB, U+64C1, U+64EC, U+6557, U+6563, U+6587, U+65B0, U+6709, U+672A, U+6797, U+67D4, U+68D2, U+68EE, U+6A02, U+6A5F, U+6A6B, U+6B16, U+6B20, U+6B64, U+6E05, U+70BA, U+71C8, U+7269, U+73A9, U+7403, U+7434, U+751F, U+767C, U+7684, U+76D2, U+793A, U+7BC0, U+7BC4, U+7C21, U+7C89, U+7D00, U+7D05, U+7D2B, U+7DA0, U+7DDA, U+7DF4, U+7E41, U+7F6E, U+7FD2, U+800D, U+80FD, U+8106, U+8272, U+8393, U+865B, U+8679, U+88DD, U+8A2D, U+8ACB, U+8B93, U+8CB7, U+8CFA, U+8CFC, U+8DB3, U+8F49, U+8FD4, U+9032, U+9084, U+914D, U+91D1, U+9304, U+9375, U+9713, U+9762, U+97F3, U+9802, U+9810, U+984D, U+98DB, U+9918, U+9AD4, U+FF01, U+FF0C, U+FF1A;
+}
+@font-face {
+  font-family: 'Noto Sans';
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url('fonts/noto-sans-tc-hot-700.woff2') format('woff2');
+  unicode-range: U+3000, U+3002, U+4E00, U+4E0A, U+4E0D, U+4E2D, U+4EE3, U+4F53, U+4F60, U+500B, U+5132, U+5149, U+5165, U+51AC, U+5206, U+5230, U+53BB, U+53D6, U+5411, U+548C, U+54C1, U+55AE, U+56DE, U+570D, U+5728, U+5929, U+5931, U+594F, U+5B50, U+5B58, U+5B8C, U+5C01, U+5C07, U+5C1A, U+5C31, U+5DEE, U+5DF2, U+5DFE, U+5E03, U+5E3D, U+5E63, U+5F69, U+5F97, U+6210, U+627E, U+63DB, U+64C1, U+64EC, U+6557, U+6563, U+6587, U+65B0, U+6709, U+672A, U+6797, U+67D4, U+68D2, U+68EE, U+6A02, U+6A5F, U+6A6B, U+6B16, U+6B20, U+6B64, U+6E05, U+70BA, U+71C8, U+7269, U+73A9, U+7403, U+7434, U+751F, U+767C, U+7684, U+76D2, U+793A, U+7BC0, U+7BC4, U+7C21, U+7C89, U+7D00, U+7D05, U+7D2B, U+7DA0, U+7DDA, U+7DF4, U+7E41, U+7F6E, U+7FD2, U+800D, U+80FD, U+8106, U+8272, U+8393, U+865B, U+8679, U+88DD, U+8A2D, U+8ACB, U+8B93, U+8CB7, U+8CFA, U+8CFC, U+8DB3, U+8F49, U+8FD4, U+9032, U+9084, U+914D, U+91D1, U+9304, U+9375, U+9713, U+9762, U+97F3, U+9802, U+9810, U+984D, U+98DB, U+9918, U+9AD4, U+FF01, U+FF0C, U+FF1A;
+}
 /*
  * Equal Play — Canonical Design System Stylesheet
  * ------------------------------------------------

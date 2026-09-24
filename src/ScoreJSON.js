@@ -734,6 +734,75 @@ ScoreJSON.toMusicXML = function (json) {
     const treble = annotate('treble');
     const bass = annotate('bass');
 
+    // ── Octave shifts (8va / 8vb / 15ma) ──────────────────────────────────
+    // ScoreJSON pitch is and stays the SOUNDING pitch. An octave shift is presentation
+    // only: it says "draw this span an octave away with a bracket", exactly as MusicXML
+    // does (<pitch> is always sounding; <octave-shift> is a <direction>). Storing it any
+    // other way would silently change what every existing consumer reads — playback,
+    // Wait Mode note matching and scoring all treat the pitch string as sounding.
+    // Absent field == no shift == the behaviour before this existed.
+    //
+    //   "octaveShifts": [ { "staff": "treble", "type": "up", "size": 8,
+    //                       "startMeasure": 4, "endMeasure": 6 } ]
+    //
+    // startMeasure/endMeasure are 1-based and inclusive. type: "up" | "down".
+    // size: 8 (octave) or 15 (two octaves).
+    const shifts = Array.isArray(json.octaveShifts) ? json.octaveShifts : [];
+    const shiftXml = (idx, staffKey, staffNum) => {
+        let out = '';
+        shifts.forEach((s, i) => {
+            if ((s.staff || 'treble') !== staffKey) return;
+            const num = (i % 6) + 1;                 // MusicXML allows 6 concurrent spans
+            const size = Number(s.size) || 8;
+            const dir = (s.type === 'down') ? 'down' : 'up';
+            const wrap = (inner) =>
+                '      <direction placement="above"><direction-type>' + inner +
+                '</direction-type><staff>' + staffNum + '</staff></direction>\n';
+            if (Number(s.startMeasure) === idx + 1) {
+                out += wrap('<octave-shift type="' + dir + '" size="' + size +
+                            '" number="' + num + '"/>');
+            }
+            if (Number(s.endMeasure) === idx + 1) {
+                out += wrap('<octave-shift type="stop" size="' + size +
+                            '" number="' + num + '"/>');
+            }
+        });
+        return out;
+    };
+
+    // Emit one staff of one measure, reporting the divisions ACTUALLY written.
+    //
+    // Two defects this closes, both found by comparing against the legacy emitter:
+    //
+    // 1. <backup> must rewind by the treble staff's real length, not by a fixed
+    //    measureDiv. The legacy emitter used Math.max(treble, bass, beats*4) and was
+    //    CORRECT on over-full measures; a hardcoded bar length starts the bass staff
+    //    partway into the bar whenever a measure holds more than its nominal duration
+    //    (ode-to-joy measures 4/8/16 — reachable from the B1 and Verovio dropdowns).
+    //
+    // 2. The position must come from what was EMITTED, not from summing tokens:
+    //    noteXml writes nothing for a pitch it cannot parse, so a token sum overshoots
+    //    and the backup rewinds past the start of the bar into a negative position.
+    const emitStaff = (entries, voice, staff) => {
+        let out = '', pos = 0;
+        (entries || []).forEach((e) => {
+            const piece = noteXml(e.tok, voice, staff, e.opts);
+            if (!piece) return;                 // unparseable pitch emitted nothing — do not advance
+            out += piece;
+            pos += tokDiv(norm(e.tok)).div;     // a chord advances once, not once per pitch
+        });
+        if (pos === 0) {
+            // An empty staff still has to fill its bar. Without this the part declares
+            // <staves>2</staves> while staff 2 holds no notes at all (fur-elise.json has
+            // an empty bass array in all 106 measures), which renderers handle badly.
+            out = '      <note print-object="no"><rest/><duration>' + measureDiv +
+                  '</duration><voice>' + voice + '</voice><type>whole</type>' +
+                  '<staff>' + staff + '</staff></note>\n';
+            pos = measureDiv;
+        }
+        return { xml: out, div: pos };
+    };
+
     measures.forEach((m, idx) => {
         xml += '    <measure number="' + (idx + 1) + '">\n';
         if (idx === 0) {
@@ -746,9 +815,15 @@ ScoreJSON.toMusicXML = function (json) {
                 '</direction-type><sound tempo="' + tempo + '"/></direction>\n';
         }
         if (m.repeatStart) xml += '      <barline location="left"><repeat direction="forward"/></barline>\n';
-        treble[idx].forEach((e) => { xml += noteXml(e.tok, 1, 1, e.opts); });
-        xml += '      <backup><duration>' + measureDiv + '</duration></backup>\n';
-        bass[idx].forEach((e) => { xml += noteXml(e.tok, 2, 2, e.opts); });
+        const tre = emitStaff(treble[idx], 1, 1);
+        const bas = emitStaff(bass[idx], 2, 2);
+        xml += shiftXml(idx, 'treble', 1);
+        xml += tre.xml;
+        // <backup><duration>0</duration></backup> is not legal MusicXML; emitStaff
+        // guarantees a non-zero position, and this guard keeps that true if it changes.
+        if (tre.div > 0) xml += '      <backup><duration>' + tre.div + '</duration></backup>\n';
+        xml += shiftXml(idx, 'bass', 2);
+        xml += bas.xml;
         if (m.repeatEnd) {
             xml += '      <barline location="right"><repeat direction="backward"/></barline>\n';
         } else if (idx === measures.length - 1) {
